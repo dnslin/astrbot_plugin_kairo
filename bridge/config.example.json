@@ -1,0 +1,14 @@
+{
+  "serverUrl": "http://127.0.0.1:6190",
+  "token": "REPLACE_WITH_THE_SAME_TOKEN_AS_ASTRBOT",
+  "expectedUserId": "REPLACE_WITH_KK9_BOT_UID",
+  "cdp": {
+    "url": "http://127.0.0.1:9222",
+    "pageMatch": "renderer.html"
+  },
+  "attachmentRoots": [],
+  "dataDir": "./data",
+  "reconnectDelayMs": 3000,
+  "pendingEventLimit": 256,
+  "fileRetentionHours": 24
+}

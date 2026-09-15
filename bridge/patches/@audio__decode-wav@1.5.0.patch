@@ -1,0 +1,12 @@
+diff --git a/decode-wav.js b/decode-wav.js
+--- a/decode-wav.js
++++ b/decode-wav.js
+@@ -126,7 +126,7 @@ function scanWavHdr(b) {
+ 			if (!fmt) return null
+ 			return { ...fmt, dataStart: pos + 8, dataSize: size }
+ 		}
+-		pos += 8 + size
++		pos += 8 + size + (size & 1)
+ 	}
+ 	return null
+ }

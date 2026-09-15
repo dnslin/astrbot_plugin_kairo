@@ -1,0 +1,7 @@
+name: astrbot_plugin_kairo
+display_name: Kairo（KK9）
+desc: 通过 kairo-driver 接入 KK9 私聊、群聊及附件消息。
+version: 0.1.0
+author: dnslin
+repo: https://github.com/dnslin/astrbot_plugin_kairo
+astrbot_version: ">=4.28.1,<5"

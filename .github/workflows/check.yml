@@ -1,0 +1,71 @@
+name: Check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  bridge:
+    name: Bridge / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '11.19.0'
+          package_json_file: bridge/package.json
+      - run: node scripts/prepare-driver.mjs
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+
+  integration:
+    name: AstrBot integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: AstrBotDevs/AstrBot
+          ref: 06261c532a6425c7a220e78791acef615cba549c
+          path: .reference-astrbot
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '11.19.0'
+          package_json_file: bridge/package.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare bridge
+        working-directory: bridge
+        run: |
+          node scripts/prepare-driver.mjs
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: Install Python test dependencies
+        run: |
+          python -m pip install uv
+          uv pip install --system -r .reference-astrbot/pyproject.toml -r requirements.txt pytest pytest-asyncio ruff
+      - name: Check Python
+        run: |
+          ruff check *.py tests
+          ruff format --check *.py tests
+      - name: Run actual AstrBot and cross-language tests
+        env:
+          ASTRBOT_SOURCE: .reference-astrbot
+        run: python -m pytest -q

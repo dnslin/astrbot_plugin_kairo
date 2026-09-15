@@ -1,0 +1,8 @@
+allowBuilds:
+  esbuild: true
+patchedDependencies:
+  '@audio/decode-wav@1.5.0': patches/@audio__decode-wav@1.5.0.patch
+  node-edge-tts@1.2.10: patches/node-edge-tts@1.2.10.patch
+overrides:
+  '@audio/decode-wav': 1.5.0
+  node-edge-tts: 1.2.10
