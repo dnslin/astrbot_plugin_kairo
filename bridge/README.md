@@ -87,7 +87,7 @@ AstrBot 发来的附件按 `file_id` 从配置好的服务下载到 `dataDir`，
 
 ## 依赖与验证
 
-Driver 固定到 `dnslin/kairo-driver` 提交 `1da7e8e67ee597624eb47a090276a7957316a258`。准备脚本在忽略的 `vendor` 目录中检出源码，按上游锁文件安装并构建 tarball。消费项目保留上游两份依赖补丁；不另行维护 Driver 源码。首次安装和 CI 都必须先运行准备脚本，再执行冻结安装。
+Driver 固定到 `dnslin/kairo-driver` 提交 `1da7e8e67ee597624eb47a090276a7957316a258`。准备脚本在忽略的 `vendor/kairo-driver-source` 目录中检出源码，按上游锁文件安装并构建 `dist`。桥接使用 `file:vendor/kairo-driver-source` 本地目录依赖，冻结安装时将已构建的 Driver 文件纳入依赖；不依赖 Windows 与 Linux 打包字节完全相同。消费项目保留上游两份依赖补丁；不另行维护 Driver 源码。首次安装和 CI 都必须先运行准备脚本，再执行冻结安装。
 
 ```powershell
 pnpm check

@@ -17,8 +17,8 @@ importers:
   .:
     dependencies:
       '@kairo/driver':
-        specifier: file:vendor/kairo-driver-2.0.0.tgz
-        version: file:vendor/kairo-driver-2.0.0.tgz
+        specifier: file:vendor/kairo-driver-source
+        version: file:vendor/kairo-driver-source
       ws:
         specifier: 8.19.0
         version: 8.19.0
@@ -205,9 +205,8 @@ packages:
   '@eshaz/web-worker@1.2.2':
     resolution: {integrity: sha512-WxXiHFmD9u/owrzempiDlBB1ZYqiLnm9s6aPc8AlFQalq2tKmqdmMr9GXOupDgzXtqnBipj8Un0gkIm7Sjf8mw==}
 
-  '@kairo/driver@file:vendor/kairo-driver-2.0.0.tgz':
-    resolution: {integrity: sha512-K7bq0niMuanAntvEnYDdd6GIZtObCsCD2Z+Iov/LCnvWnexdebxALzJYo/wK18O8MTREKGpR64zEG6yHlRaRbA==, tarball: file:vendor/kairo-driver-2.0.0.tgz}
-    version: 2.0.0
+  '@kairo/driver@file:vendor/kairo-driver-source':
+    resolution: {directory: vendor/kairo-driver-source, type: directory}
     engines: {node: '>=22.13.0'}
 
   '@pinojs/redact@0.4.0':
@@ -545,7 +544,7 @@ snapshots:
 
   '@eshaz/web-worker@1.2.2': {}
 
-  '@kairo/driver@file:vendor/kairo-driver-2.0.0.tgz':
+  '@kairo/driver@file:vendor/kairo-driver-source':
     dependencies:
       '@audio/decode-mp3': 1.3.1
       '@audio/decode-wav': 1.5.0(patch_hash=2b2a7dc402f58f9c699172f49ebf0f696ba70680b4799445cf85e75be321b378)

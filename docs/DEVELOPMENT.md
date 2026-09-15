@@ -8,7 +8,9 @@
 - Driver 固定版本：`1da7e8e67ee597624eb47a090276a7957316a258`，包版本 2.0.0。
 - Python 3.12+，Node.js 22.13+（推荐 24），pnpm 11.19.0。
 
-Python 插件只声明 `aiohttp`，其余 AstrBot API 由宿主提供。Driver 尚未发布 npm，因此准备脚本固定检出、构建并打包，再通过本地 tarball 安装。音频依赖补丁放在 `bridge/patches` 并由 `pnpm-workspace.yaml` 应用。更新 Driver 时同时更新固定提交、补丁和锁文件，不能只修改包版本号。
+Python 插件只声明 `aiohttp`，其余 AstrBot API 由宿主提供。Driver 尚未发布 npm，因此准备脚本固定检出并构建，再通过 `file:vendor/kairo-driver-source` 本地目录依赖安装。音频依赖补丁放在 `bridge/patches` 并由 `pnpm-workspace.yaml` 应用。更新 Driver 时同时更新固定提交、补丁和锁文件，不能只修改包版本号。
+
+不使用本机生成的 tarball 作为锁文件输入：Windows 和 Linux 的打包结果存在字节差异，会导致同一份锁文件校验失败。固定 Git 提交、检查工作区未修改、使用上游和消费方锁文件，保证两边使用一致源码与依赖。
 
 ## 本地检查
 

@@ -68,7 +68,7 @@ pnpm build
 Copy-Item config.example.json config.json
 ```
 
-准备脚本会获取固定版本的 Driver 并打包，不需要你手动复制 Driver 源码。
+准备脚本会获取固定提交的 Driver 并构建，桥接通过本地目录依赖使用它，不需要你手动复制源码。
 
 完全退出 KK9，再用实际安装路径启动客户端，登录机器人账号：
 
