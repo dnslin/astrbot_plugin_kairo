@@ -8,6 +8,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const source = resolve(root, 'vendor', 'kairo-driver-source');
 const revision = 'b23829d6e65ddd99ab9ab019395ddba205b12b4a';
 const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
+const sendFix = resolve(root, 'patches', 'driver-native-send.patch');
 
 function run(command, args, cwd = root, failureMessage) {
   // pnpm 在 Windows 是 .cmd；shell 命令仅由固定参数组成，目录通过 cwd 传入。
@@ -25,6 +26,9 @@ if (!existsSync(source)) {
   run('git', ['clone', '-c', 'core.autocrlf=false', 'https://github.com/dnslin/kairo-driver.git', source]);
 }
 run('git', ['config', 'core.autocrlf', 'false'], source);
+// 重复准备时先撤下本项目已应用的补丁，再检查上游源码是否有其他修改。
+const applied = spawnSync('git', ['apply', '--reverse', '--check', sendFix], { cwd: source });
+if (applied.status === 0) run('git', ['apply', '--reverse', sendFix], source);
 const dirtyMessage = 'Driver 工作目录存在跟踪文件修改，请先保存或恢复修改后再运行准备脚本';
 run('git', ['diff', '--quiet', '--', ':!start-kk9-cdp.bat'], source, dirtyMessage);
 run('git', ['diff', '--cached', '--quiet', '--', ':!start-kk9-cdp.bat'], source, dirtyMessage);
@@ -45,6 +49,8 @@ for (const name of ['@audio__decode-wav@1.5.0.patch', 'node-edge-tts@1.2.10.patc
     throw new Error(`Driver 补丁不一致：${name}`);
   }
 }
+run('git', ['apply', '--check', sendFix], source);
+run('git', ['apply', sendFix], source);
 run(pnpm, ['install', '--frozen-lockfile'], source);
 run(pnpm, ['build'], source);
 console.log(`Driver ${revision} 已准备完成；继续运行 pnpm install --frozen-lockfile。`);

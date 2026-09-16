@@ -16,3 +16,4 @@ bridge/.cache/
 bridge/data/
 bridge/coverage/
 .reference-astrbot/
+artifacts

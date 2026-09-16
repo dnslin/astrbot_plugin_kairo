@@ -89,7 +89,20 @@ AstrBot 发来的附件按 `file_id` 从配置好的服务下载到 `dataDir`，
 
 ## 依赖与验证
 
-Driver 固定到 `dnslin/kairo-driver` 提交 `1da7e8e67ee597624eb47a090276a7957316a258`。准备脚本在忽略的 `vendor/kairo-driver-source` 目录中检出源码，按上游锁文件安装并构建 `dist`。桥接使用 `file:vendor/kairo-driver-source` 本地目录依赖，冻结安装时将已构建的 Driver 文件纳入依赖；不依赖 Windows 与 Linux 打包字节完全相同。消费项目保留上游两份依赖补丁；不另行维护 Driver 源码。首次安装和 CI 都必须先运行准备脚本，再执行冻结安装。
+Driver 固定到 `dnslin/kairo-driver` 提交 `b23829d6e65ddd99ab9ab019395ddba205b12b4a`。准备脚本在忽略的 `vendor/kairo-driver-source` 目录中检出源码，应用 `patches/driver-native-send.patch`，再按上游锁文件安装并构建 `dist`。该补丁修复两处发送错误：按 KK9 原生约定使用 `sesTypeID` 作为收件人；所有消息类型的关联标记都避开会被原生历史查询过滤的 `C/c`。补丁包含回归测试；重复准备时会先撤下同一补丁，其他源码修改仍会阻止覆盖。
+
+发送确认按最近 20 条读取；发送状态回查分 20 条一页、最多 5 页，保留最近 100 条的范围，并从实际最新记录开始，不使用可能滞后的会话缓存序号作为上限。部分会话一次读取 50/100 条会返回 KK9 的 `Internal Server Error`，即使新消息已落库，也会造成旧版错误报告 `unknown`。此修复位于独立 Node.js 桥接端，重载 AstrBot 插件不能替代重启桥接。
+
+桥接使用 `file:vendor/kairo-driver-source` 本地目录依赖。更新已有安装时，先停止桥接，再执行以下命令以重新打包本地 Driver，最后启动桥接；无需删除发送数据库，也不会自动重发旧的 `unknown` 操作：
+
+```powershell
+node scripts/prepare-driver.mjs
+pnpm install --force --frozen-lockfile
+pnpm build
+pnpm start
+```
+
+首次安装和 CI 仍须先运行准备脚本，再执行冻结安装。消费项目同时保留上游两份依赖补丁。
 
 ```powershell
 pnpm check

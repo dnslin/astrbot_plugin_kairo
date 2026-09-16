@@ -5,7 +5,7 @@
 ## 依赖来源
 
 - AstrBot 验证基线：`06261c532a6425c7a220e78791acef615cba549c`，版本 4.28.1。
-- Driver 固定版本：`1da7e8e67ee597624eb47a090276a7957316a258`，包版本 2.0.0。
+- Driver 固定版本：`b23829d6e65ddd99ab9ab019395ddba205b12b4a`，包版本 2.0.0，另应用 `bridge/patches/driver-native-send.patch` 修复原生发送收件人和关联标记。
 - Python 3.12+，Node.js 22.13+（推荐 24），pnpm 11.19.0。
 
 Python 插件只声明 `aiohttp`，其余 AstrBot API 由宿主提供。Driver 尚未发布 npm，因此准备脚本固定检出并构建，再通过 `file:vendor/kairo-driver-source` 本地目录依赖安装。音频依赖补丁放在 `bridge/patches` 并由 `pnpm-workspace.yaml` 应用。更新 Driver 时同时更新固定提交、补丁和锁文件，不能只修改包版本号。
@@ -23,6 +23,8 @@ pnpm install --frozen-lockfile
 pnpm check
 cd ..
 ```
+
+修改发送补丁后，在 `bridge/vendor/kairo-driver-source` 运行 `pnpm test`、`pnpm typecheck`；补丁中的测试覆盖对方创建的私聊收件人、群聊、含 `C/c` 的操作 ID 和旧发送记录只读回查。该目录被 Git 忽略，修改必须同步到补丁文件。已有桥接安装需执行 `pnpm install --force --frozen-lockfile` 重新打包 Driver，再构建并重启桥接。不要删除操作数据库或自动重发旧的 `unknown` 消息。
 
 Python 测试需要完整的 AstrBot 源码及其依赖。可在相邻目录克隆验证基线，使用独立虚拟环境：
 
@@ -53,7 +55,7 @@ Windows 使用 `.venv\Scripts\python.exe`，并用 `$env:ASTRBOT_SOURCE = "..\As
 - [AstrBot 平台注册](https://github.com/AstrBotDevs/AstrBot/blob/06261c532a6425c7a220e78791acef615cba549c/astrbot/core/platform/register.py)
 - [AstrBot 平台生命周期](https://github.com/AstrBotDevs/AstrBot/blob/06261c532a6425c7a220e78791acef615cba549c/astrbot/core/platform/platform.py)
 - [AstrBot 消息模型](https://github.com/AstrBotDevs/AstrBot/blob/06261c532a6425c7a220e78791acef615cba549c/astrbot/core/platform/astrbot_message.py)
-- [Driver 公开接口](https://github.com/dnslin/kairo-driver/blob/1da7e8e67ee597624eb47a090276a7957316a258/src/types/index.ts)
+- [Driver 公开接口](https://github.com/dnslin/kairo-driver/blob/b23829d6e65ddd99ab9ab019395ddba205b12b4a/src/types/index.ts)
 - [aiohttp WebSocket 与文件响应](https://docs.aiohttp.org/en/stable/web_reference.html)
 
 官方平台教程的部分示例与 4.28.1 的构造参数不一致，实现以以上源码为准。

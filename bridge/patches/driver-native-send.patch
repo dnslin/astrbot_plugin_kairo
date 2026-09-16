@@ -1,0 +1,811 @@
+diff --git a/src/bridge/card-ops.ts b/src/bridge/card-ops.ts
+index eddac04..76fa8fe 100644
+--- a/src/bridge/card-ops.ts
++++ b/src/bridge/card-ops.ts
+@@ -125,7 +125,7 @@ export async function sendNativeStructuredMessage(
+           senderName: myName,
+           senderNameEN: myName,
+           senderNameTC: myName,
+-          typeID: targetSes.typeID || targetSes.sesTypeID,
++          typeID: targetSes.sesTypeID,
+           typeName: record.title || targetSes.typeName || targetSes.name || ''
+         };
+       }
+@@ -137,7 +137,7 @@ export async function sendNativeStructuredMessage(
+         senderName: myName,
+         senderNameEN: myName,
+         senderNameTC: myName,
+-        receiver: targetSes.typeID || targetSes.sesTypeID,
++        receiver: targetSes.sesTypeID,
+         sendTime,
+         sessionType: targetSes.type,
+         sessionID: targetSes.id,
+diff --git a/src/bridge/image-ops.ts b/src/bridge/image-ops.ts
+index 91a8a26..4113a9c 100644
+--- a/src/bridge/image-ops.ts
++++ b/src/bridge/image-ops.ts
+@@ -95,7 +95,7 @@ const CONFIRM_SENT_MESSAGE_SCRIPT = `
+     for (let attempt = 0; attempt < 15; attempt++) {
+       const messagesRes = await callIpc('getMessages', {
+         sessionID,
+-        count: 100,
++        count: 20,
+         endIdx: 2147483647,
+         sendTime: 0
+       });
+@@ -268,7 +268,7 @@ export async function sendNativeImage(
+         senderName: myName,
+         senderNameEN: myName,
+         senderNameTC: myName,
+-        receiver: targetSes.typeID || targetSes.sesTypeID,
++        receiver: targetSes.sesTypeID,
+         sendTime: Math.floor(Date.now() / 1000),
+         sessionType: targetSes.type,
+         sessionID: targetSes.id,
+diff --git a/src/bridge/message-ops.ts b/src/bridge/message-ops.ts
+index e67cf9c..ba2989f 100644
+--- a/src/bridge/message-ops.ts
++++ b/src/bridge/message-ops.ts
+@@ -84,10 +84,10 @@ const FIND_REPLY_TARGET_SCRIPT = `
+     }
+ 
+     let endIdx = 2147483647;
+-    for (let page = 0; page < 10; page++) {
++    for (let page = 0; page < 100; page++) {
+       const response = await callIpc('getMessages', {
+         sessionID,
+-        count: 200,
++        count: 20,
+         endIdx,
+         sendTime: 0
+       });
+@@ -97,7 +97,7 @@ const FIND_REPLY_TARGET_SCRIPT = `
+         message => String(message?.id) === targetMessageId
+       );
+       if (match) return normalizeReplyTargetMessage(match);
+-      if (response.data.length < 200) return null;
++      if (response.data.length < 20) return null;
+ 
+       const indices = response.data
+         .map(message => Number(message?.msgIdx))
+@@ -443,7 +443,7 @@ export class BridgeMessageOps {
+           senderName: myName,
+           senderNameEN: myName,
+           senderNameTC: myName,
+-          receiver: targetSes.typeID || targetSes.sesTypeID,
++          receiver: targetSes.sesTypeID,
+           sendTime: Math.floor(Date.now() / 1000),
+           sessionType: targetSes.type,
+           sessionID: targetSes.id,
+@@ -625,7 +625,7 @@ export class BridgeMessageOps {
+           senderName: myName,
+           senderNameEN: myName,
+           senderNameTC: myName,
+-          receiver: targetSes.typeID || targetSes.sesTypeID,
++          receiver: targetSes.sesTypeID,
+           sendTime: Math.floor(Date.now() / 1000),
+           sessionType: targetSes.type,
+           sessionID: targetSes.id,
+@@ -780,7 +780,7 @@ export class BridgeMessageOps {
+           senderName: myName,
+           senderNameEN: myName,
+           senderNameTC: myName,
+-          receiver: targetSes.typeID || targetSes.sesTypeID,
++          receiver: targetSes.sesTypeID,
+           sendTime: Math.floor(Date.now() / 1000),
+           sessionType: targetSes.type,
+           sessionID: targetSes.id,
+diff --git a/src/bridge/renderer-script.ts b/src/bridge/renderer-script.ts
+index 0c4de48..266c992 100644
+--- a/src/bridge/renderer-script.ts
++++ b/src/bridge/renderer-script.ts
+@@ -128,7 +128,7 @@ export const CONFIRM_SENT_MESSAGE_SCRIPT = `
+     const targetSessionIds = [String(sessionID), String(targetSession?.id), String(targetSession?.sesUUID)];
+     for (let attempt = 0; attempt < 12; attempt++) {
+       const messagesRes = await callIpc('getMessages', {
+-        sessionID, count: 100, endIdx: 2147483647, sendTime: 0
++        sessionID, count: 20, endIdx: 2147483647, sendTime: 0
+       });
+       if (messagesRes?.code === 0 && Array.isArray(messagesRes.data)) {
+         const found = messagesRes.data.find(message => {
+diff --git a/src/bridge/send-status.ts b/src/bridge/send-status.ts
+index d338f18..3750298 100644
+--- a/src/bridge/send-status.ts
++++ b/src/bridge/send-status.ts
+@@ -32,12 +32,10 @@ export interface NativeSendStatusObservation {
+ }
+ 
+ export function createNativeMessageKey(kind: string, operationId?: string): string {
+-  const isNativeMedia = NATIVE_MEDIA_KINDS[kind] === true;
+   const normalizedOperationId = operationId?.trim();
+   if (normalizedOperationId) {
+     const key = `kairo:operation:${encodeURIComponent(normalizedOperationId)}`;
+-    // 旧类型保留已有短键供历史回查；新媒体类型不能生成会被原生历史过滤的 C/c。
+-    if (key.length <= 64 && (!isNativeMedia || !/[Cc]/.test(key))) return key;
++    if (key.length <= 64 && !/[Cc]/.test(key)) return key;
+     // 原生历史查询过滤 %C%；同时避开 SQLite LIKE 可能折叠的小写 c。
+     // . 和 ~ 不在 Base64URL 字母表中，替换保持一一对应与完整摘要长度。
+     const digest = createHash('sha256')
+@@ -48,7 +46,7 @@ export function createNativeMessageKey(kind: string, operationId?: string): stri
+     return `k:op:${digest}`;
+   }
+   const key = `kairo:${kind}:${randomUUID()}`;
+-  return isNativeMedia ? key.replaceAll('C', '.').replaceAll('c', '~') : key;
++  return key.replaceAll('C', '.').replaceAll('c', '~');
+ }
+ export async function resolveActiveSendOptions<T extends SendOptions | SendFileOptions>(
+   cdp: CdpClient,
+@@ -134,9 +132,9 @@ export class BridgeSendStatus {
+ 
+   private async readNativeMessage(
+     targetSessionId: string,
+-    nativeKey: string
++    nativeKeys: string[]
+   ): Promise<NativeSendStatusObservation | null> {
+-    const encoded = encodeRendererPayload({ target: targetSessionId, nativeKey });
++    const encoded = encodeRendererPayload({ target: targetSessionId, nativeKeys });
+     try {
+       return await this.cdp.evaluate<NativeSendStatusObservation | null>(
+         `
+@@ -153,26 +151,38 @@ export class BridgeSendStatus {
+               .filter(value => value !== undefined && value !== null && String(value).trim() !== '')
+               .map(value => String(value));
+ 
+-            const response = await callKairoIpc('getMessages', {
+-              sessionID: targetSession.id,
+-              count: 100,
+-              endIdx: targetSession.maxMessageIndex ?? 2147483647,
+-              sendTime: 0
+-            });
+-            if (response?.code !== 0 || !Array.isArray(response.data)) return null;
+-
+-            const found = response.data.find(message => {
+-              if (!message || message.msgFlag !== data.nativeKey || Number(message.id) <= 0) {
+-                return false;
++            let endIdx = 2147483647;
++            for (let page = 0; page < 5; page++) {
++              const response = await callKairoIpc('getMessages', {
++                sessionID: targetSession.id,
++                count: 20,
++                endIdx,
++                sendTime: 0
++              });
++              if (response?.code !== 0 || !Array.isArray(response.data)) {
++                throw new Error(response?.error || response?.message || 'getMessages 未返回有效数组');
+               }
+-              const rawSessionId = message.sessionId ?? message.sessionID ?? message.sesUUID;
+-              return rawSessionId === undefined ||
+-                rawSessionId === null ||
+-                String(rawSessionId).trim() === '' ||
+-                targetSessionIds.includes(String(rawSessionId));
+-            });
+-            if (!found) return null;
+-            return { messageId: String(found.id), sessionId: String(data.target) };
++
++              const found = response.data.find(message => {
++                if (!message || !data.nativeKeys.includes(message.msgFlag) || Number(message.id) <= 0) {
++                  return false;
++                }
++                const rawSessionId = message.sessionId ?? message.sessionID ?? message.sesUUID;
++                return rawSessionId === undefined ||
++                  rawSessionId === null ||
++                  String(rawSessionId).trim() === '' ||
++                  targetSessionIds.includes(String(rawSessionId));
++              });
++              if (found) return { messageId: String(found.id), sessionId: String(data.target) };
++              if (response.data.length < 20) break;
++              const indices = response.data.map(message => Number(message.msgIdx))
++                .filter(index => Number.isInteger(index) && index > 0);
++              if (!indices.length) break;
++              const nextEndIdx = Math.min(...indices) - 1;
++              if (nextEndIdx >= endIdx) break;
++              endIdx = nextEndIdx;
++            }
++            return null;
+           })()
+         `,
+         15000
+@@ -211,7 +221,14 @@ export class BridgeSendStatus {
+       operation.fingerprint.messageType,
+       operation.operationId
+     );
+-    const observation = await this.readNativeMessage(targetSessionId, nativeKey);
++    const nativeKeys = [nativeKey];
++    // 旧记录未保存原生键；在同一次只读查询中兼容旧类型的短键，不改写记录或重新发送。
++    // KK9 若已过滤旧键，仍返回 unknown，不能仅凭 fingerprint 推断已送达。
++    if (NATIVE_MEDIA_KINDS[operation.fingerprint.messageType] !== true) {
++      const legacyKey = `kairo:operation:${encodeURIComponent(operation.operationId.trim())}`;
++      if (legacyKey.length <= 64 && legacyKey !== nativeKey) nativeKeys.push(legacyKey);
++    }
++    const observation = await this.readNativeMessage(targetSessionId, nativeKeys);
+     if (
+       !observation ||
+       !isValidNativeMessageId(observation.messageId) ||
+diff --git a/tests/bridge-message-ops.test.ts b/tests/bridge-message-ops.test.ts
+index 5922e69..ed10d25 100644
+--- a/tests/bridge-message-ops.test.ts
++++ b/tests/bridge-message-ops.test.ts
+@@ -1,3 +1,5 @@
++import { randomUUID } from 'node:crypto';
++import type * as NodeCrypto from 'node:crypto';
+ import fs from 'node:fs';
+ import path from 'node:path';
+ import { afterEach, describe, expect, it, vi } from 'vitest';
+@@ -15,12 +17,29 @@ import {
+ } from '../src/send-operation.js';
+ import { createNativeMessageKey } from '../src/bridge/send-status.js';
+ 
++vi.mock('node:crypto', async importOriginal => {
++  const crypto = await importOriginal<typeof NodeCrypto>();
++  return { ...crypto, randomUUID: vi.fn(crypto.randomUUID) };
++});
++
+ describe('BridgeMessageOps 纯数据消息操作测试', () => {
+   afterEach(() => {
+     vi.useRealTimers();
+   });
+ 
+   describe('原生发送键长度约束', () => {
++    const kinds = [
++      'text',
++      'rich-text',
++      'reply',
++      'image',
++      'file',
++      'url-card',
++      'biz-message',
++      'app-message',
++      'chat-record',
++      'voice',
++    ];
+     it('保留已有64字符合法键并压缩超长和中文操作ID', () => {
+       const boundaryId = 'a'.repeat(64 - 'kairo:operation:'.length);
+       expect(createNativeMessageKey('text', boundaryId)).toBe(`kairo:operation:${boundaryId}`);
+@@ -48,25 +67,39 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
+       expect(createNativeMessageKey('text', `${prefix}乙`)).not.toBe(first);
+     });
+ 
+-    it('五类新消息的无 operationId 随机关联键均避开 C/c', () => {
+-      for (const kind of ['url-card', 'biz-message', 'app-message', 'chat-record', 'voice']) {
++    it('所有消息的无 operationId 随机关联键均避开 C/c', () => {
++      for (const kind of kinds) {
++        vi.mocked(randomUUID).mockReturnValueOnce('c236ed11-2f6a-4149-8f3b-a714b3edbed1');
+         const key = createNativeMessageKey(kind);
+         expect(key).not.toMatch(/[Cc]/);
+         expect(Buffer.byteLength(key)).toBeLessThanOrEqual(64);
++        vi.mocked(randomUUID).mockReturnValueOnce('2236ed11-2f6a-4149-8f3b-a714b3edbed1');
+         expect(createNativeMessageKey(kind)).not.toBe(key);
+       }
+     });
+ 
+-    it('新消息的短含 c 操作 ID 使用安全稳定键，不改变旧类型回查键', () => {
++    it('所有消息的短含 c 操作 ID 使用安全稳定键并保留大小写差异', () => {
+       const operationId = 'task-complete-001';
+-      for (const kind of ['url-card', 'biz-message', 'app-message', 'chat-record', 'voice']) {
++      for (const kind of kinds) {
+         const key = createNativeMessageKey(kind, operationId);
+         expect(key).not.toMatch(/[Cc]/);
+         expect(Buffer.byteLength(key)).toBeLessThanOrEqual(64);
+         expect(createNativeMessageKey(kind, ` ${operationId} `)).toBe(key);
+         expect(createNativeMessageKey(kind, 'task-Complete-001')).not.toBe(key);
+       }
+-      expect(createNativeMessageKey('text', operationId)).toBe('kairo:operation:task-complete-001');
++    });
++
++    it('真实发送操作 ID 均保留差异且不会被原生历史过滤', () => {
++      const operationIds = ['a236ed112f6a41498f3ba714b3edbed1', '2e9d6f0ab79548d5a3eb2cdad43bda53'];
++      for (const kind of kinds) {
++        const keys = operationIds.map(operationId => createNativeMessageKey(kind, operationId));
++        expect(keys[0]).not.toBe(keys[1]);
++        for (const [index, key] of keys.entries()) {
++          expect(key).not.toMatch(/[Cc]/);
++          expect(Buffer.byteLength(key)).toBeLessThanOrEqual(64);
++          expect(createNativeMessageKey(kind, operationIds[index])).toBe(key);
++        }
++      }
+     });
+   });
+ 
+@@ -298,7 +331,9 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
+       });
+       const runtime = createRendererRuntime({
+         ipc,
+-        sessions: [{ id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 }],
++        sessions: [
++          { id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 },
++        ],
+       });
+       const mockCdp = {
+         evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+@@ -425,7 +460,9 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
+       });
+       const runtime = createRendererRuntime({
+         ipc,
+-        sessions: [{ id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 }],
++        sessions: [
++          { id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 },
++        ],
+       });
+       const mockCdp = {
+         evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+@@ -463,7 +500,9 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
+       });
+       const runtime = createRendererRuntime({
+         ipc,
+-        sessions: [{ id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 }],
++        sessions: [
++          { id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 },
++        ],
+       });
+       const mockCdp = {
+         evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+@@ -486,7 +525,9 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
+       });
+       const runtime = createRendererRuntime({
+         ipc,
+-        sessions: [{ id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 }],
++        sessions: [
++          { id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 },
++        ],
+       });
+       const mockCdp = {
+         evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+@@ -510,7 +551,9 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
+       ipc.once('data-800001', unrelatedListener);
+       const runtime = createRendererRuntime({
+         ipc,
+-        sessions: [{ id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 }],
++        sessions: [
++          { id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 },
++        ],
+       });
+       const mockCdp = {
+         evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+@@ -553,7 +596,9 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
+       });
+       const runtime = createRendererRuntime({
+         ipc,
+-        sessions: [{ id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 }],
++        sessions: [
++          { id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 },
++        ],
+       });
+       const mockCdp = {
+         evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+@@ -586,7 +631,9 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
+       });
+       const runtime = createRendererRuntime({
+         ipc,
+-        sessions: [{ id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 }],
++        sessions: [
++          { id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 },
++        ],
+       });
+       const mockCdp = {
+         evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+@@ -640,7 +687,9 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
+       const runtime = createRendererRuntime({
+         ipc,
+         math: deterministicMath,
+-        sessions: [{ id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 }],
++        sessions: [
++          { id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 },
++        ],
+       });
+       const mockCdp = {
+         evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+@@ -673,9 +722,7 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
+       const ipc = new FakeIpcRenderer(() => ({ code: 0 }));
+       const runtime = createRendererRuntime({
+         ipc,
+-        sessions: [
+-          { id: 93002, sesUUID: '1-92001', typeName: '当前群聊', type: 1, typeID: 92001 },
+-        ],
++        sessions: [{ id: 93002, sesUUID: '1-92001', typeName: '当前群聊', type: 1, typeID: 92001 }],
+       });
+       const mockCdp = {
+         evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+@@ -1224,7 +1271,9 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
+       const ipc = new FakeIpcRenderer(() => ({ code: 0 }));
+       const runtime = createRendererRuntime({
+         ipc,
+-        sessions: [{ id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 }],
++        sessions: [
++          { id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 },
++        ],
+         messages: [{ id: 23, msgIdx: 7, sessionID: 93001 }],
+       });
+       const mockCdp = {
+@@ -1245,7 +1294,9 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
+       const ipc = new FakeIpcRenderer(() => ({}));
+       const runtime = createRendererRuntime({
+         ipc,
+-        sessions: [{ id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 }],
++        sessions: [
++          { id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 },
++        ],
+         messages: [{ id: 123, msgIdx: 8, sessionID: 93001 }],
+       });
+       const mockCdp = {
+@@ -1264,7 +1315,9 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
+       });
+       const runtime = createRendererRuntime({
+         ipc,
+-        sessions: [{ id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 }],
++        sessions: [
++          { id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 },
++        ],
+         messages: [{ id: 123, msgIdx: 8, sessionID: 93001 }],
+       });
+       const mockCdp = {
+@@ -1281,7 +1334,9 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
+ 
+     it('缺少 ipcRenderer 时不得以 bus-only 撤回作为成功', async () => {
+       const runtime = createRendererRuntime({
+-        sessions: [{ id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 }],
++        sessions: [
++          { id: 93001, sesUUID: '0-91002', typeName: 'test-employee', type: 0, typeID: 91002 },
++        ],
+         messages: [{ id: 123, msgIdx: 8, sessionID: 93001 }],
+       });
+       const mockCdp = {
+@@ -1711,6 +1766,125 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
+       });
+     });
+ 
++    it('会话缓存序号落后时仍能确认已落库的新消息', async () => {
++      const operationId = '0da9e55ed09f4b05b5d8068d5713e4eb';
++      const store = new InMemorySendOperationStore();
++      await store.claim({
++        operationId,
++        fingerprint: createSendOperationFingerprint({
++          targetSessionId: session.sesUUID,
++          messageType: 'text',
++          content: '延迟回执',
++        }),
++      });
++      const message = {
++        id: 136405743,
++        msgIdx: 560,
++        sessionID: session.id,
++        msgFlag: createNativeMessageKey('text', operationId),
++      };
++      const ipc = new FakeIpcRenderer(request => {
++        if (request.args[0] !== 'getMessages') throw new Error('状态查询不得发送消息');
++        const query = request.args[1] as { endIdx: number; count: number };
++        if (query.count > 20) return { code: 1, message: 'Internal Server Error' };
++        return { code: 0, data: message.msgIdx <= query.endIdx ? [message] : [] };
++      });
++      const runtime = createRendererRuntime({
++        ipc,
++        sessions: [{ ...session, maxMessageIndex: 559 }],
++      });
++      const cdp = {
++        evaluate: (script: string) => runRendererScript(script, runtime.context),
++      } as unknown as CdpClient;
++
++      const result = await new BridgeMessageOps(cdp, store).getSendStatus(operationId);
++      expect(result).toMatchObject({ status: 'delivered', messageId: '136405743' });
++    });
++
++    it('分小页回查仍能确认最近一百条中的最旧消息', async () => {
++      const operationId = 'paged-receipt';
++      const store = new InMemorySendOperationStore();
++      await store.claim({
++        operationId,
++        fingerprint: createSendOperationFingerprint({
++          targetSessionId: session.sesUUID,
++          messageType: 'text',
++          content: '分页回查',
++        }),
++      });
++      const messages = Array.from({ length: 100 }, (_, index) => ({
++        id: 1000 + index,
++        msgIdx: 100 - index,
++        sessionID: session.id,
++        msgFlag: index === 99 ? createNativeMessageKey('text', operationId) : 'A1',
++      }));
++      const ipc = new FakeIpcRenderer(request => {
++        if (request.args[0] !== 'getMessages') throw new Error('状态查询不得发送消息');
++        const query = request.args[1] as { endIdx: number; count: number };
++        if (query.count > 20) return { code: 1, message: 'Internal Server Error' };
++        return {
++          code: 0,
++          data: messages.filter(message => message.msgIdx <= query.endIdx).slice(0, query.count),
++        };
++      });
++      const runtime = createRendererRuntime({ ipc, sessions: [session] });
++      const cdp = {
++        evaluate: (script: string) => runRendererScript(script, runtime.context),
++      } as unknown as CdpClient;
++      expect(await new BridgeMessageOps(cdp, store).getSendStatus(operationId)).toMatchObject({
++        status: 'delivered',
++        messageId: '1099',
++      });
++    });
++
++    it.each([false, true])('旧短键历史被过滤=%s 时只读回查，不重发已有 unknown', async filtered => {
++      const operationId = '2e9d6f0ab79548d5a3eb2cdad43bda53';
++      const content = '旧关联键发送';
++      const store = new InMemorySendOperationStore();
++      await store.claim({
++        operationId,
++        fingerprint: createSendOperationFingerprint({
++          targetSessionId: session.sesUUID,
++          messageType: 'text',
++          content: { payload: content, replyTo: undefined, mentions: undefined },
++        }),
++      });
++      await store.update(operationId, { status: 'unknown', isPreTrigger: false });
++      const legacyMessage = {
++        id: 135000207,
++        msgFlag: `kairo:operation:${operationId}`,
++        sessionID: session.sesUUID,
++      };
++      const ipc = new FakeIpcRenderer(request => {
++        if (request.args[0] === 'getMessages') {
++          return { code: 0, data: filtered ? [] : [legacyMessage] };
++        }
++        return { code: 1 };
++      });
++      const runtime = createRendererRuntime({ ipc, sessions: [session] });
++      const mockCdp = {
++        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
++      } as unknown as CdpClient;
++      const ops = new BridgeMessageOps(mockCdp, store);
++
++      const queried = await ops.getSendStatus(operationId);
++      const repeated = await ops.sendText(content, {
++        targetSessionId: session.sesUUID,
++        operationId,
++      });
++
++      for (const result of [queried, repeated]) {
++        expect(result).toMatchObject({
++          success: !filtered,
++          status: filtered ? 'unknown' : 'delivered',
++          isPreTrigger: false,
++        });
++        if (!filtered) expect(result.messageId).toBe(String(legacyMessage.id));
++      }
++      expect(ipc.sent.map(request => request.args[0])).toEqual(['getMessages', 'getMessages']);
++      expect((await store.get(operationId))?.status).toBe('unknown');
++    });
++
+     it('只读查询次数增加时不增加发送调用次数', async () => {
+       const operationId = 'op-read-only';
+       const store = new InMemorySendOperationStore();
+diff --git a/tests/native-media.test.ts b/tests/native-media.test.ts
+index 08aec41..bbd7bf7 100644
+--- a/tests/native-media.test.ts
++++ b/tests/native-media.test.ts
+@@ -28,6 +28,7 @@ const session = {
+   name: 'test-employee',
+   type: 0,
+   typeID: 91002,
++  sesTypeID: 91002,
+ };
+ 
+ interface SuccessfulNativeRuntime {
+diff --git a/tests/native-recipient.test.ts b/tests/native-recipient.test.ts
+new file mode 100644
+--- /dev/null
++++ b/tests/native-recipient.test.ts
+@@ -0,0 +1,217 @@
++import fs from 'node:fs';
++import os from 'node:os';
++import path from 'node:path';
++import { afterAll, beforeAll, describe, expect, it } from 'vitest';
++import type { CdpClient } from '../src/cdp/client.js';
++import { BridgeMessageOps } from '../src/bridge/message-ops.js';
++import { sendNativeStructuredMessage } from '../src/bridge/card-ops.js';
++import type { SendOptions, SendResult } from '../src/types/index.js';
++import {
++  createRendererRuntime,
++  FakeIpcRenderer,
++  runRendererScript,
++  type RendererSession,
++} from './helpers/renderer-runtime.js';
++
++const selfId = 5761;
++const sessions = [
++  {
++    name: '对方创建的私聊',
++    session: { id: 630541, sesUUID: '0-9047', type: 0, typeID: selfId, sesTypeID: 9047 },
++  },
++  {
++    name: '群聊',
++    session: { id: 630542, sesUUID: '1-92001', type: 1, typeID: selfId, sesTypeID: 92001 },
++  },
++];
++
++interface SendCase {
++  name: string;
++  contentType: number;
++  send: (
++    ops: BridgeMessageOps,
++    cdp: CdpClient,
++    options: SendOptions,
++    imagePath: string
++  ) => Promise<SendResult>;
++}
++
++const sendCases: SendCase[] = [
++  {
++    name: '文本',
++    contentType: 4,
++    send: (ops, _cdp, options) => ops.sendText('收件人回归', options),
++  },
++  {
++    name: '富文本',
++    contentType: 4,
++    send: (ops, _cdp, options) => ops.sendRichText('**收件人回归**', options),
++  },
++  {
++    name: '回复',
++    contentType: 13,
++    send: (ops, _cdp, options) => ops.sendReply({ messageId: '900' }, '回复内容', options),
++  },
++  {
++    name: '文件',
++    contentType: 3,
++    send: (ops, _cdp, options, imagePath) => ops.sendFile(imagePath, options),
++  },
++  {
++    name: '图片',
++    contentType: 4,
++    send: (ops, _cdp, options, imagePath) => ops.sendImage(imagePath, options),
++  },
++  {
++    name: '链接卡片',
++    contentType: 10,
++    send: (ops, _cdp, options) =>
++      ops.sendUrlCard(
++        {
++          title: '链接',
++          summary: '摘要',
++          linkUrl: 'https://example.com',
++        },
++        options
++      ),
++  },
++  {
++    name: '业务卡片',
++    contentType: 17,
++    send: (ops, _cdp, options) => ops.sendBizMessage({ title: '任务', content: '内容' }, options),
++  },
++  {
++    name: '应用卡片',
++    contentType: 8,
++    send: (ops, _cdp, options) => ops.sendAppMessage({ title: '应用', content: '内容' }, options),
++  },
++  {
++    name: '聊天记录卡片',
++    contentType: 15,
++    send: (ops, _cdp, options) =>
++      ops.sendChatRecord(
++        {
++          title: '聊天记录',
++          msgArray: [{ senderName: '原发送者', contentType: 0, content: '原内容' }],
++        },
++        options
++      ),
++  },
++  {
++    name: '已准备的原生语音',
++    contentType: 2,
++    send: (_ops, cdp, options) =>
++      sendNativeStructuredMessage(
++        cdp,
++        {
++          kind: 'voice',
++          contentType: 2,
++          content: { filepath: 'C:\\voice.amr', duration: 1 },
++        },
++        options
++      ),
++  },
++];
++
++function createNativeRuntime(session: RendererSession) {
++  const persisted: Array<Record<string, unknown>> = [];
++  const ipc = new FakeIpcRenderer(request => {
++    const [channel, payload] = request.args;
++    if (channel === 'sendingImgBeforeHandle') {
++      return { code: 0, data: { thumbPath: 'C:\\thumb.png', artworkPath: 'C:\\art.png' } };
++    }
++    if (channel === 'insertSendBefoeMsg') {
++      return { code: 0, data: { id: -22, msgIdx: '1.001' } };
++    }
++    if (channel === 'sendMessageNew') {
++      const message = payload as Record<string, unknown>;
++      if (message['receiver'] !== session.sesTypeID || message['sessionID'] !== session.id) {
++        return { code: 1, error: '发送目标与原生会话不一致' };
++      }
++      persisted.push({ ...message, id: 135100001, msgIdx: 10 });
++      return { code: 0 };
++    }
++    if (channel === 'getMessages') {
++      // 请求由本测试执行的 renderer 脚本构造。
++      const query = payload as { count: number };
++      if (query.count > 20) {
++        return { code: 1, message: 'Internal Server Error' };
++      }
++      return {
++        code: 0,
++        data: [
++          {
++            id: 900,
++            msgIdx: 9,
++            sessionID: session.id,
++            sender: 7722,
++            senderName: '原发送者',
++            contentType: 4,
++            content: { content: [{ type: 0, text: '原消息' }] },
++          },
++          ...persisted,
++        ],
++      };
++    }
++    return { code: 1, error: '未支持的测试 IPC' };
++  });
++  const runtime = createRendererRuntime({
++    ipc,
++    sessions: [session],
++    main: { userID: selfId, userName: '我', deviceID: 'test-device' },
++  });
++  const cdp = {
++    evaluate: (script: string) => runRendererScript(script, runtime.context),
++  } as unknown as CdpClient;
++  return { ipc, cdp, ops: new BridgeMessageOps(cdp) };
++}
++
++describe('原生发送收件人遵循 KK9 sesTypeID 语义', () => {
++  let tempDir: string;
++  let imagePath: string;
++
++  beforeAll(() => {
++    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kairo-native-recipient-'));
++    imagePath = path.join(tempDir, 'pixel.png');
++    fs.writeFileSync(
++      imagePath,
++      Buffer.from(
++        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
++        'base64'
++      )
++    );
++  });
++
++  afterAll(() => {
++    if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
++  });
++
++  describe.each(sessions)('$name', ({ session }) => {
++    it.each(sendCases)('$name 发送给 sesTypeID 而不是自己', async ({ contentType, send }) => {
++      const { ipc, cdp, ops } = createNativeRuntime(session);
++      const result = await send(ops, cdp, { targetSessionId: session.sesUUID }, imagePath);
++
++      for (const channel of ['insertSendBefoeMsg', 'sendMessageNew']) {
++        const requests = ipc.sent.filter(request => request.args[0] === channel);
++        expect(requests).toHaveLength(1);
++        expect(requests[0]?.args[1]).toMatchObject({
++          contentType,
++          sender: selfId,
++          receiver: session.sesTypeID,
++          sessionType: session.type,
++          sessionID: session.id,
++        });
++        if (contentType === 15) {
++          expect(requests[0]?.args[1]).toMatchObject({
++            content: {
++              typeID: session.sesTypeID,
++              senderID: selfId,
++              msgArray: [expect.objectContaining({ senderName: '原发送者' })],
++            },
++          });
++        }
++      }
++      expect(result).toMatchObject({ success: true, status: 'delivered', messageId: '135100001' });
++    });
++  });
++});
