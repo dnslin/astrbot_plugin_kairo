@@ -137,6 +137,23 @@ def test_uncached_or_expired_files_never_become_readable_components():
     assert "内容尚未取得" in message.message_str
 
 
+def test_private_message_session_id_pointing_to_self_is_corrected_to_sender():
+    msg = convert_message(
+        incoming(
+            sessionId="0-5761",
+            senderId="7783",
+            sessionType="private",
+            content="你好",
+        ),
+        self_id="5761",
+        isolate_group_users=True,
+        get_file_path=lambda file_id: Path("/cache") / file_id,
+    )
+    assert msg is not None
+    assert msg.session_id == "0-7783"
+    assert msg.raw_message["sessionId"] == "0-7783"
+
+
 def test_group_session_round_trip_and_malformed_session():
     session = encode_group_session("1-team:会议_室", "user_name:%")
     assert target_from_session(session) == "1-team:会议_室"

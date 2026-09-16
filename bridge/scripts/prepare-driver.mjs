@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const source = resolve(root, 'vendor', 'kairo-driver-source');
-const revision = '1da7e8e67ee597624eb47a090276a7957316a258';
+const revision = 'b23829d6e65ddd99ab9ab019395ddba205b12b4a';
 const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
 
 function run(command, args, cwd = root, failureMessage) {
