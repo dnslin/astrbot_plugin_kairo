@@ -72,6 +72,10 @@ def convert_message(
         return None
 
     is_group = session_type == "group"
+    if not is_group and (session_id in {f"0-{self_id}", self_id} or not session_id):
+        session_id = f"0-{sender_id}"
+        data["sessionId"] = session_id
+
     message = AstrBotMessage()
     message.type = MessageType.GROUP_MESSAGE if is_group else MessageType.FRIEND_MESSAGE
     message.self_id = self_id
