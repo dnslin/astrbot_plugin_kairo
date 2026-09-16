@@ -76,6 +76,8 @@ Copy-Item config.example.json config.json
 & "C:\Path\To\KK9.exe" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222
 ```
 
+也可以直接运行 `bridge/start-kk9-cdp.bat` 自动探测默认安装路径并启动。
+
 先运行 `pnpm whoami` 获取 UID，再编辑 `config.json`：
 
 ```json

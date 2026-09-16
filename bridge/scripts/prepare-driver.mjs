@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -26,9 +26,17 @@ if (!existsSync(source)) {
 }
 run('git', ['config', 'core.autocrlf', 'false'], source);
 const dirtyMessage = 'Driver 工作目录存在跟踪文件修改，请先保存或恢复修改后再运行准备脚本';
-run('git', ['diff', '--quiet'], source, dirtyMessage);
-run('git', ['diff', '--cached', '--quiet'], source, dirtyMessage);
-run('git', ['checkout', '--detach', revision], source);
+run('git', ['diff', '--quiet', '--', ':!start-kk9-cdp.bat'], source, dirtyMessage);
+run('git', ['diff', '--cached', '--quiet', '--', ':!start-kk9-cdp.bat'], source, dirtyMessage);
+run('git', ['checkout', '--force', '--detach', revision], source);
+const batPath = resolve(source, 'start-kk9-cdp.bat');
+if (existsSync(batPath)) {
+  let batContent = readFileSync(batPath, 'utf8');
+  if (!batContent.includes('chcp 65001')) {
+    batContent = batContent.replace(/^@echo off\r?\n/, '@echo off\r\nchcp 65001 >nul\r\n');
+  }
+  writeFileSync(batPath, batContent.replace(/\r?\n/g, '\r\n'), 'utf8');
+}
 const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' });
 if (head.status !== 0 || head.stdout.trim() !== revision) throw new Error('Driver 提交身份核对失败');
 for (const name of ['@audio__decode-wav@1.5.0.patch', 'node-edge-tts@1.2.10.patch']) {

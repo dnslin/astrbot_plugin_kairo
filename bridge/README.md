@@ -33,6 +33,8 @@ pnpm start --config C:\kairo\config.json
 & "C:\Path\To\KK9.exe" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222
 ```
 
+也可以直接运行 `./start-kk9-cdp.bat` 自动查找默认安装路径并带调试参数启动。
+
 `http://127.0.0.1:9222/json` 应能列出 KK9 页面。如果页面地址不包含 `renderer.html`，请把 `cdp.pageMatch` 改成实际 URL 的稳定片段。
 
 首次配置可读取当前机器人 UID（只读取身份，不发送消息）：
