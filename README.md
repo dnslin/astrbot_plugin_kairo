@@ -59,7 +59,7 @@ Docker 部署在原有 AstrBot 服务中追加 `6190:6190` 端口映射。Window
 
 在 KK9 电脑安装 Node.js 24（最低 22.13）、Git、pnpm 11.19.0：
 
-本次原图修复配套固定 Driver 提交 `97729bc61e131592b9b850ad9ed922ca170188c8`，准备脚本、目录依赖及锁文件使用同一提交。无需本机开发仓库链接；按下列常规命令安装即可获得原图字段与下载接口。
+本次原图修复配套固定 Driver 提交 `f12d4e39d6d92224132148722f0646aafda8a8d6`，准备脚本、目录依赖及锁文件使用同一提交。无需本机开发仓库链接；按下列常规命令安装即可获得原图字段、下载接口及共用来源规则。
 
 ```powershell
 git clone https://github.com/dnslin/astrbot_plugin_kairo.git

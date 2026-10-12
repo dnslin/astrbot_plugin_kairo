@@ -1,9 +1,9 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { mkdir, open, realpath, readdir, rename, rm, stat, utimes } from 'node:fs/promises';
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { IKK9Driver, KK9ImageInfo, KK9Message } from '@kairo/driver';
+import { getOriginalImageUri, hasOriginalImageSource, type IKK9Driver, type KK9ImageInfo, type KK9Message } from '@kairo/driver';
 import type { BridgeConfig } from './config.js';
 import { RequestError } from './protocol.js';
 
@@ -71,14 +71,14 @@ export class Attachments {
   }
 
   private async imagePath(image: KK9ImageInfo): Promise<string | null> {
-    const hasOriginal = image.originalFilePath !== undefined || image.originalUri !== undefined;
+    const hasOriginal = hasOriginalImageSource(image);
     const local = (hasOriginal ? [image.originalFilePath, image.originalUri] : [image.filePath, image.url, image.uri]).map(localAttachmentPath).find(Boolean);
     if (local) {
       try { return await this.attachmentPath(local); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     }
     // 原图字段存在时，缩略图路径和 URI 都不是可用候选。
-    const resource = (hasOriginal ? image.originalUri ?? '' : image.uri || image.url || '').split(/[?#]/, 1)[0]!.replace(/\\/g, '/').split('/').pop();
+    const resource = (getOriginalImageUri(image) || (hasOriginal ? '' : image.url) || '').split(/[?#]/, 1)[0]!.replace(/\\/g, '/').split('/').pop();
     if (!resource || resource === '.' || resource === '..') return null;
     for (const root of this.config.attachmentRoots) {
       let entries: string[];
@@ -96,9 +96,8 @@ export class Attachments {
     return null;
   }
 
-  private async downloadImage(image: KK9ImageInfo, driver?: Pick<IKK9Driver, 'downloadImage'>): Promise<string> {
-    const hasOriginal = image.originalFilePath !== undefined || image.originalUri !== undefined;
-    const uri = hasOriginal ? image.originalUri : image.uri;
+  private async downloadImage(image: KK9ImageInfo, driver: Pick<IKK9Driver, 'downloadImage'>): Promise<string> {
+    const uri = getOriginalImageUri(image);
     if (!uri) throw new Error('图片尚未缓存，且缺少原图下载 URI');
     const pending = this.imageDownloads.get(uri);
     if (pending) return pending;
@@ -108,34 +107,29 @@ export class Attachments {
     finally { this.imageDownloads.delete(uri); }
   }
 
-  private async cacheImage(image: KK9ImageInfo, uri: string, driver?: Pick<IKK9Driver, 'downloadImage'>): Promise<string> {
+  private async cacheImage(image: KK9ImageInfo, uri: string, driver: Pick<IKK9Driver, 'downloadImage'>): Promise<string> {
     const id = createHash('sha256').update(uri).digest('hex').slice(0, 32);
     const directory = join(this.config.dataDir, 'attachments', id);
     const name = safeFilename((uri.split(/[?#]/, 1)[0] || '').replace(/\\/g, '/').split('/').pop() || 'image');
     const target = join(directory, name);
-    if (driver) await mkdir(directory, { recursive: true });
-    else {
-      try { await stat(target); }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error('图片尚未缓存，当前调用未提供原图下载 Driver');
-        throw error;
-      }
-    }
+    await mkdir(directory, { recursive: true });
     try {
       await this.attachmentPath(target);
       const cached = await stat(target);
       if (!cached.isFile() || cached.size < 1 || cached.size > IMAGE_LIMIT) throw new Error('附件为空或超过 20 MiB 限制');
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      if (!driver) throw new Error('图片尚未缓存，当前调用未提供原图下载 Driver');
+      // 原生超时并不取消后台写入；每次尝试独占临时文件，完成后才发布缓存。
+      const partial = join(directory, `${randomUUID()}.part`);
       try {
-        const downloaded = await driver.downloadImage(image, target);
-        if (downloaded !== target) throw new Error('原图下载返回的路径与请求的缓存路径不一致');
-        await this.attachmentPath(target);
-        const info = await stat(target);
+        const downloaded = await driver.downloadImage(image, partial);
+        if (downloaded !== partial) throw new Error('原图下载返回的路径与请求的临时路径不一致');
+        await this.attachmentPath(partial);
+        const info = await stat(partial);
         if (!info.isFile() || info.size < 1 || info.size > IMAGE_LIMIT) throw new Error('附件为空或超过 20 MiB 限制');
+        await rename(partial, target);
       } catch (downloadError) {
-        await rm(target, { force: true }).catch(() => {});
+        await rm(partial, { force: true }).catch(() => {});
         throw downloadError;
       }
     }
@@ -219,7 +213,7 @@ export class Attachments {
     return target;
   }
 
-  async normalize(message: KK9Message, driver?: Pick<IKK9Driver, 'downloadImage'>): Promise<WireMessage> {
+  async normalize(message: KK9Message, driver: Pick<IKK9Driver, 'downloadImage'>): Promise<WireMessage> {
     const { raw: _raw, images: _images, fileInfo: _fileInfo, ...core } = message;
     const result: WireMessage = { ...core };
     if (message.images?.length) {

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { FakeKK9Driver, type KK9Message } from '@kairo/driver';
 import { Attachments, safeFilename } from '../src/attachments.js';
@@ -38,12 +40,13 @@ test('附件必须位于真实白名单目录内，不能通过符号链接越�
 test('未缓存附件保留说明并移除本地路径、URL和 raw，不阻断文本', async () => {
   const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1' }, '/tmp');
   const files = new Attachments(config);
-  const result = await files.normalize({ id: '101', sessionId: '2', sessionName: '', sessionType: 'private', direction: 'inbound', sender: '员工', senderId: '2', content: '请看附件', time: '', isMe: false, timestamp: 1, raw: { private: true }, images: [{ url: 'https://private/image', uri: 'private-uri' }], fileInfo: { fileName: 'doc.pdf' } } as KK9Message);
+  const result = await files.normalize({ id: '101', sessionId: '2', sessionName: '', sessionType: 'private', direction: 'inbound', sender: '员工', senderId: '2', content: '请看附件', time: '', isMe: false, timestamp: 1, raw: { private: true }, images: [{ url: 'https://private/image', uri: 'private-uri' }], fileInfo: { fileName: 'doc.pdf' } } as KK9Message, new FakeKK9Driver());
   assert.equal(result.content, '请看附件');
   assert.equal(result.raw, undefined);
   const picture = (result.images as Record<string, unknown>[])[0]!;
   assert.equal(picture.url, undefined);
-  assert.match(String(picture.attachment_error), /尚未缓存/);
+  assert.equal(picture.file_id, undefined);
+  assert.match(String(picture.attachment_error), /private-uri/);
 });
 
 test('下载附件只请求固定服务的 file_id 并使用安全且稳定的本地名称', async () => {
@@ -75,11 +78,11 @@ test('已缓存图片与文件上传实际字节，缓存外路径保留具体�
     await writeFile(join(root, 'cache', 'document.txt'), '真实附件');
     await writeFile(join(root, 'outside.txt'), '不得读取');
     const input: KK9Message = { id: '101', sessionId: '2', sessionName: '', sessionType: 'private', direction: 'inbound', sender: '员工', senderId: '2', content: '附件正文', time: '', isMe: false, timestamp: 1, images: [{ filePath: join(root, 'cache', 'picture.png'), width: 2 }], fileInfo: { fileName: 'document.txt', filePath: join(root, 'cache', 'document.txt') } };
-    const normalized = await files.normalize(input);
+    const normalized = await files.normalize(input, new FakeKK9Driver());
     assert.deepEqual(uploads, [Buffer.from([137, 80, 78, 71]), Buffer.from('真实附件')]);
     assert.deepEqual(normalized.images, [{ width: 2, file_id: 'c'.repeat(32), name: 'picture.png', size: 4 }]);
     assert.deepEqual(normalized.fileInfo, { fileName: 'document.txt', file_id: 'c'.repeat(32), name: 'document.txt', size: Buffer.byteLength('真实附件') });
-    const denied = await files.normalize({ ...input, images: [], fileInfo: { fileName: 'outside.txt', filePath: join(root, 'outside.txt') } });
+    const denied = await files.normalize({ ...input, images: [], fileInfo: { fileName: 'outside.txt', filePath: join(root, 'outside.txt') } }, new FakeKK9Driver());
     assert.ok(denied.fileInfo && typeof denied.fileInfo === 'object' && 'attachment_error' in denied.fileInfo);
     assert.match(String(denied.fileInfo.attachment_error), /attachmentRoots/);
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -114,7 +117,7 @@ test('URI 图片按资源文件名读取已有 PNG 缓存，不能误选前缀�
     await writeFile(join(root, 'image', 'resource-other.png'), 'wrong image');
     await writeFile(join(root, 'image', 'resource.png'), png);
     const input = { id: '101', sessionId: '2', sessionName: '', sessionType: 'private', direction: 'inbound', sender: '员工', senderId: '2', content: '识别图片', time: '', isMe: false, timestamp: 1, images: [{ uri: 'groupc7/M00/7B/6A/resource', mimeType: 'image/png' }] } as KK9Message;
-    const result = await files.normalize(input);
+    const result = await files.normalize(input, new FakeKK9Driver());
     assert.deepEqual(uploads, [png]);
     assert.deepEqual(result.images, [{ mimeType: 'image/png', file_id: 'f'.repeat(32), name: 'resource.png', size: png.length }]);
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -133,11 +136,11 @@ test('URI 图片缓存无扩展名时读取准确资源，同名多扩展名不�
     await writeFile(join(root, 'image', 'resource'), 'exact cached image');
     await writeFile(join(root, 'image', 'resource.png'), 'different conversion');
     const input = { id: '101', sessionId: '2', sessionName: '', sessionType: 'private', direction: 'inbound', sender: '员工', senderId: '2', content: '识别图片', time: '', isMe: false, timestamp: 1, images: [{ uri: 'groupc7/M00/resource' }] } as KK9Message;
-    assert.equal(((await files.normalize(input)).images as Array<{name:string}>)[0]!.name, 'resource');
+    assert.equal(((await files.normalize(input, new FakeKK9Driver())).images as Array<{name:string}>)[0]!.name, 'resource');
     assert.deepEqual(uploads, ['exact cached image']);
     await rm(join(root, 'image', 'resource'));
     await writeFile(join(root, 'image', 'resource.jpg'), 'another conversion');
-    const ambiguous = await files.normalize(input);
+    const ambiguous = await files.normalize(input, new FakeKK9Driver());
     assert.match(String((ambiguous.images as Array<{attachment_error:string}>)[0]!.attachment_error), /多个/);
     assert.deepEqual(uploads, ['exact cached image']);
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -152,7 +155,7 @@ test('URI 图片命中的缓存链接仍不能越过 attachmentRoots 读取其�
     await mkdir(join(root, 'image'));
     await symlink(root, join(root, 'image', 'resource.png'), 'junction');
     const input = { id: '101', sessionId: '2', sessionName: '', sessionType: 'private', direction: 'inbound', sender: '员工', senderId: '2', content: '识别图片', time: '', isMe: false, timestamp: 1, images: [{ uri: 'groupc7/M00/resource' }] } as KK9Message;
-    const result = await files.normalize(input);
+    const result = await files.normalize(input, new FakeKK9Driver());
     const image = (result.images as Array<{attachment_error:string}>)[0]!;
     assert.match(String(image.attachment_error), /attachmentRoots/);
     assert.equal(uploads, 0);
@@ -191,9 +194,8 @@ for (const stalePath of [false, true]) {
     const driver = new FakeKK9Driver();
     driver.setImageResource('server/original', original);
     let downloads = 0;
-    let downloadedPath = '';
     const nativeDownload = driver.downloadImage.bind(driver);
-    driver.downloadImage = async (image, target) => { downloads++; downloadedPath = target; return nativeDownload(image, target); };
+    driver.downloadImage = async (image, target) => { downloads++; return nativeDownload(image, target); };
     const uploads: Buffer[] = [];
     const files = new Attachments(config, (async (_url, init) => {
       uploads.push(Buffer.from(init!.body as Uint8Array));
@@ -206,16 +208,12 @@ for (const stalePath of [false, true]) {
       const result = await files.normalize(input, driver);
       assert.equal((result.images as Array<{size:number}>)[0]!.size, original.length);
       assert.deepEqual(uploads, [original]);
-      assert.match(relative(join(config.dataDir, 'attachments'), downloadedPath).replace(/\\/g, '/'), /^[a-f0-9]{32}\/[^/]+$/);
-      assert.deepEqual(await readFile(downloadedPath), original);
       await files.normalize(input, driver);
       assert.equal(downloads, 1);
       assert.deepEqual(uploads, [original, original]);
-      assert.equal(((await files.normalize(input)).images as Array<{size:number}>)[0]!.size, original.length);
-      assert.deepEqual(uploads, [original, original, original]);
-      assert.equal(downloads, 1);
       const old = new Date(Date.now() - 25 * 3600_000);
-      await utimes(dirname(downloadedPath), old, old);
+      const [cacheId] = await readdir(join(config.dataDir, 'attachments'));
+      await utimes(join(config.dataDir, 'attachments', cacheId!), old, old);
       await files.cleanup();
       assert.deepEqual(await readdir(join(config.dataDir, 'attachments')), []);
     } finally { await rm(root, { recursive: true, force: true }); }
@@ -279,6 +277,8 @@ test('缓存歧义、目录越界、非文件及仅原图路径不能靠下载�
       { image: { originalFilePath: join(root, 'image', 'not-file'), originalUri: 'server/original' }, error: /附件为空或超过|文件/ },
       { image: { originalFilePath: join(root, 'image', 'thumb.png', 'child'), originalUri: 'server/original' }, error: /ENOTDIR|目录|directory/i },
       { image: { originalFilePath: join(root, 'image', 'missing.png'), uri: 'server/thumb', filePath: join(root, 'image', 'thumb.png') }, error: /原图.*URI|尚未缓存/ },
+      { image: { originalUri: '', uri: 'server/thumb', filePath: join(root, 'image', 'thumb.png') }, error: /原图.*URI/ },
+      { image: { originalFilePath: '', uri: 'server/thumb', filePath: join(root, 'image', 'thumb.png') }, error: /原图.*URI/ },
     ];
     for (const { image, error } of cases) {
       const result = await files.normalize(inboundImage([image]), driver);
@@ -337,5 +337,72 @@ test('原图缓存目录尚未创建时仍可下载到桥接缓存', async () =>
     const result = await files.normalize(inboundImage([{ originalFilePath: join(root, 'not-created', 'original.png'), originalUri: 'server/uninitialized' }]), driver);
     assert.deepEqual(uploads, [original]);
     assert.equal((result.images as Array<{size:number}>)[0]!.size, original.length);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('原图下载进程中断后重启必须重新取得完整图片', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'kairo-original-interrupted-'));
+  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1' }, root);
+  const original = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a+WQAAAAASUVORK5CYII=', 'base64');
+  const input = inboundImage([{ originalUri: 'server/interrupted', size: original.length }]);
+  const child = `
+    import { writeFile } from 'node:fs/promises';
+    import { Attachments } from ${JSON.stringify(new URL('../src/attachments.ts', import.meta.url).href)};
+    const files = new Attachments(${JSON.stringify(config)});
+    await files.normalize(${JSON.stringify(input)}, {
+      async downloadImage(_image, target) {
+        await writeFile(target, Buffer.from(${JSON.stringify([...original.subarray(0, 24)])}));
+        process.exit(17);
+      }
+    });
+  `;
+  const uploads: Buffer[] = [];
+  const files = new Attachments(config, (async (_url, init) => {
+    uploads.push(Buffer.from(init!.body as Uint8Array));
+    return Response.json({ file_id: 'a'.repeat(32) });
+  }) as typeof fetch);
+  const driver = new FakeKK9Driver();
+  driver.setImageResource('server/interrupted', original);
+  try {
+    const interrupted = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', child], {
+      cwd: fileURLToPath(new URL('../', import.meta.url)), encoding: 'utf8', timeout: 15_000,
+    });
+    assert.equal(interrupted.status, 17, interrupted.stderr);
+    const result = await files.normalize(input, driver);
+    assert.deepEqual(uploads, [original]);
+    assert.equal((result.images as Array<{size:number}>)[0]!.size, original.length);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('超时原图的迟到写入不能覆盖后续成功缓存', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'kairo-original-late-write-'));
+  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1' }, root);
+  const original = Buffer.from('complete original after retry');
+  const driver = new FakeKK9Driver();
+  driver.setImageResource('server/late', original);
+  const nativeDownload = driver.downloadImage.bind(driver);
+  let expiredTarget: string | undefined;
+  driver.downloadImage = async (image, target) => {
+    if (expiredTarget === undefined) {
+      expiredTarget = target;
+      throw new Error('原生下载超时');
+    }
+    return nativeDownload(image, target);
+  };
+  const uploads: Buffer[] = [];
+  const fetcher = (async (_url, init) => {
+    uploads.push(Buffer.from(init!.body as Uint8Array));
+    return Response.json({ file_id: 'a'.repeat(32) });
+  }) as typeof fetch;
+  const files = new Attachments(config, fetcher);
+  const input = inboundImage([{ originalUri: 'server/late' }]);
+  try {
+    const failed = await files.normalize(input, driver);
+    assert.match(String((failed.images as Array<{attachment_error:string}>)[0]!.attachment_error), /超时/);
+    await files.normalize(input, driver);
+    await writeFile(expiredTarget!, 'late partial');
+    const reopened = await new Attachments(config, fetcher).normalize(input, driver);
+    assert.deepEqual(uploads, [original, original]);
+    assert.equal((reopened.images as Array<{size:number}>)[0]!.size, original.length);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
