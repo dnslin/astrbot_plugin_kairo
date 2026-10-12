@@ -129,7 +129,7 @@ elif result["status"] == "unknown":
     result = await client.get_send_status(result["operationId"])  # 只查询，不重发
 ```
 
-每个 `operation_id` 代表一个固定发送意图，不能给另一条消息复用。`notify_employee` 和 `send_voice_text` 返回 `sent/failed/unknown` 结果；名单拒绝、桥接不可用等调用错误会抛出 `BridgeError`。`send_chain` 成功返回 `None`，发送失败/未知会抛出带 `result` 的 `BridgeError`。通过 `await client.get_sessions()` 获取原生会话 ID 及会话类型，用于主动发送和配置群名单。
+每个 `operation_id` 代表一个固定发送意图，不能给另一条消息复用。`notify_employee`、`send_voice_text` 和单卡片 `send_card` 返回 `sent/failed/unknown` 结果；名单拒绝、桥接不可用等调用错误会抛出 `BridgeError`。`send_chain` 成功返回 `None`，发送失败/未知会抛出带 `result` 的 `BridgeError`。通过 `await client.get_sessions()` 获取原生会话 ID 及会话类型，用于主动发送和配置群名单。
 
 ## 4. 卡片和媒体
 
@@ -218,7 +218,7 @@ if result["status"] == "unknown":
 - 入站图片改为原图缓存优先；缓存缺失时通过配套 Driver 的 KK9 原生接口下载实际原图，桥接自管缓存沿用附件保留期。原图失败不会把缩略图当成功，不新增用户配置；同步更新 Driver 固定提交、准备脚本、目录依赖和锁文件。
 - 保留 URI-only 图片的精确缓存文件名匹配，缓存歧义及路径越界明确报错。
 - 更正 UID 查询命令为 `pnpm run whoami`，避免误调用 pnpm 的包仓库账号查询。
-- 新增仅当前 Kairo 会话的按需语音、应用/链接/业务卡片工具；保留人格停用选择、名单和原生目标，重复尝试及未知结果不重发。
+- 新增仅当前 Kairo 会话的按需语音、应用/链接/业务卡片工具；保留人格停用选择、名单和原生目标，重复尝试及未知结果不重发，等待取消后保留原操作 ID 供查询。
 - 新增明确的 `voice_text` 桥接类型和独立请求时限；文字合成由 Driver 完成，网络代理使用 Node 进程标准环境变量，不增加宿主 TTS 或兼容路径。
 - 依赖升级到配套 Driver 2.0.1，按其已发布源码提交固定准备脚本、目录依赖与锁文件；先发布依赖，再发布插件。
 - 已知验证边界：真实接收端播放/卡片呈现及模型选择仍待人工验收；一次图片往返缺图未定位根因，后续完整检查和连续往返通过，不宣称已修复该偶发问题。

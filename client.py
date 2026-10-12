@@ -148,6 +148,33 @@ class KairoClient:
             timeout=90,
         )
 
+    async def send_card(
+        self,
+        target_session_id: str,
+        card: dict,
+        *,
+        sender_id: str | None = None,
+        operation_id: str | None = None,
+    ) -> dict:
+        """发送一张 Kairo Json 卡片，返回含稳定操作 ID 的原生结果。
+
+        card 使用 kairo.app/kairo.url/kairo.biz 的既有 Json 字段；名单和
+        完整卡片预检与消息链一致。调用方可在等待取消后查询同一 operation_id。
+        """
+        if (
+            not target_session_id.isascii()
+            or not target_session_id.isdecimal()
+            or target_session_id.startswith("0")
+        ):
+            raise ValueError(f"需要原生 KK9 会话 ID：{target_session_id}")
+        params = self._card_params(card)
+        await self._check_target(target_session_id, sender_id)
+        return await self._send_operation(
+            "send",
+            {**params, "target_session_id": target_session_id},
+            operation_id=operation_id,
+        )
+
     async def get_send_status(self, operation_id: str) -> dict:
         """Query an existing intent without resubmitting it."""
         return await self._server.request("get_send_status", {"operation_id": operation_id})

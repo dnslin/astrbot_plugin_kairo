@@ -84,7 +84,7 @@ Python 完成事件提交或名单拒绝后返回 `{"type":"ack","event_id":"...
 
 SQLite 在触发发送前声明意图。同一 ID 的目标、工号、内容、类型、引用或提及不同会冲突；相同意图重复调用不会再次触发，前置失败也不重新提交。发送记录保留正式会话和原生回执，迟到 `unknown` 不覆盖 `sent/failed`。
 
-Python 请求超时或断线后不重新发送，只查询一次原 `operation_id`。仍未知则保留操作 ID 和原因；`notify_employee`、`send_voice_text` 返回结果供调用方处理，`send_chain` 抛出含 `result` 的 `BridgeError`。协议不保证进程重启后的入站补偿或端到端恰好一次处理。
+Python 请求超时或断线后不重新发送，只查询一次原 `operation_id`。仍未知则保留操作 ID 和原因；`notify_employee`、`send_voice_text`、单卡片 `send_card` 返回结果供调用方处理，`send_chain` 抛出含 `result` 的 `BridgeError`。四类按需工具在提交前保存操作 ID，等待取消后仍能核查原意图。协议不保证进程重启后的入站补偿或端到端恰好一次处理。
 
 员工和群黑白名单由 Python 公共客户端统一执行；Bridge RPC 是内部传输，不是另一个面向插件的无名单发送 API。管理员指令、事件回复和主动发送都经过该客户端。
 

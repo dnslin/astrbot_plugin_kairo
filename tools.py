@@ -4,8 +4,6 @@ import asyncio
 from html import escape
 from uuid import uuid4
 
-from astrbot.api.event import MessageChain
-from astrbot.api.message_components import Json
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.astr_agent_context import AstrAgentContext
@@ -37,9 +35,7 @@ def _outcome_error(result: dict) -> str:
     return f"错误：发送未成功（{status!r}）：{reason}。{diagnostic}"
 
 
-async def _submit(
-    event: KairoMessageEvent, name: str, args: dict, operation_id: str | None
-) -> str | None:
+async def _submit(event: KairoMessageEvent, name: str, args: dict, operation_id: str) -> str | None:
     try:
         if name == "kairo_send_voice":
             result = await event.adapter.get_client().send_voice_text(
@@ -48,9 +44,6 @@ async def _submit(
                 sender_id=event.sender_id,
                 operation_id=operation_id,
             )
-            if result.get("status") != "sent":
-                return _outcome_error(result)
-            event._has_send_oper = True
         else:
             data = dict(args)
             if name == "kairo_send_app_card":
@@ -66,8 +59,15 @@ async def _submit(
             else:
                 data["type"] = "kairo.biz"
                 data["content"] = data.pop("text")
-            # KairoMessageEvent.send 经真实 client 完成名单复核；失败/unknown 会抛 BridgeError。
-            await event.send(MessageChain([Json(data)]))
+            result = await event.adapter.get_client().send_card(
+                event.target_session_id,
+                data,
+                sender_id=event.sender_id,
+                operation_id=operation_id,
+            )
+        if result.get("status") != "sent":
+            return _outcome_error(result)
+        event._has_send_oper = True
     except BridgeError as exc:
         if exc.result:
             return f"[{exc.code}] {_outcome_error(exc.result)}"
@@ -103,7 +103,7 @@ async def _call(
         except (ValidationError, ValueError, TypeError) as exc:
             reason = exc.message if isinstance(exc, ValidationError) else str(exc)
             return f"错误（INVALID_ARGUMENT）：{reason}；operationId=未提交。"
-        operation_id = uuid4().hex if tool.name == "kairo_send_voice" else None
+        operation_id = uuid4().hex
         # 在首次 await / 外部副作用之前记录；记录在事件而不是复用的工具实例上。
         task = asyncio.create_task(_submit(event, tool.name, args, operation_id))
         attempt = {"task": task, "operation_id": operation_id}

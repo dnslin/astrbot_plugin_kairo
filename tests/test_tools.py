@@ -427,17 +427,20 @@ async def test_default_agent_stops_after_confirmed_send_but_explains_failure(
 
 
 @pytest.mark.asyncio
-async def test_cancelled_voice_wait_retains_original_intent_without_resubmission():
+@pytest.mark.parametrize("tool_type,args,kind", CASES[:2])
+async def test_cancelled_tool_wait_retains_original_intent_without_resubmission(
+    tool_type, args, kind
+):
     boundary = NativeBoundary(block=True)
     event = make_event(boundary)
-    tool = KairoSendVoiceTool()
-    pending = asyncio.create_task(tool.call(wrap(event), text="朗读"))
+    tool = tool_type()
+    pending = asyncio.create_task(tool.call(wrap(event), **args))
     await boundary.started.wait()
     operation_id = boundary.sends[0]["operation_id"]
     pending.cancel()
     with pytest.raises(asyncio.CancelledError):
         await pending
-    result = await tool.call(wrap(event), text="不能重新发")
+    result = await tool.call(wrap(event), **args)
     assert "unknown" in result and "不重发" in result
     assert f"operationId={operation_id}" in result
     assert len(boundary.sends) == 1
