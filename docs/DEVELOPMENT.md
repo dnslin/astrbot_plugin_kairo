@@ -16,12 +16,14 @@
 ## 依赖来源
 
 - AstrBot 验证基线：`v4.29.0-beta.1`，元数据约束 `>=4.29.0b1,<5`。该基线不是稳定版承诺。
-- Driver 固定提交：`15eb384f38c96fbfa9f5f6064713d5740f4bc45f`。新旧包均为 2.0.0，必须按源码提交而非包版本辨别接口。
+- Driver 固定提交：`f12d4e39d6d92224132148722f0646aafda8a8d6`。新旧包均为 2.0.0，必须按源码提交而非包版本辨别接口。
 - Python 3.12+、Node.js 22.13+（推荐 24）、pnpm 11.19.0。
 
-Python 插件只声明 `aiohttp`，AstrBot API 由宿主提供。Driver 尚未发布 npm；准备脚本固定检出、按上游锁文件安装并构建，通过 `file:vendor/kairo-driver-15eb384f38c9` 目录依赖消费。保留上游两份音频依赖补丁，不再应用 `driver-native-send.patch`。更新固定提交时同步准备脚本、依赖目录名和锁文件，不修改相邻开发仓库。
+Python 插件只声明 `aiohttp`，AstrBot API 由宿主提供。Driver 尚未发布 npm；准备脚本固定检出、按上游锁文件安装并构建，通过 `file:vendor/kairo-driver-f12d4e39d6d9` 目录依赖消费。保留上游两份音频依赖补丁，不再应用 `driver-native-send.patch`。更新固定提交时同步准备脚本、依赖目录名和锁文件；本轮经用户授权的共用原图规则修复另外提交到 Driver PR #15。
 
 准备过程先在独立临时目录检出，完成后才发布最终目录；中断可重试。已有最终目录若提交不符或跟踪文件修改则明确报错，不覆盖修改。不使用本机 tarball 作为跨系统锁文件输入。
+
+原图修复最初通过本机 Driver 链接完成联调；pnpm 默认依赖检查曾将链接恢复到旧版，暴露新增接口缺失，相关失败没有被隐藏。准备脚本、目录依赖和锁文件统一固定到配套 Driver 提交，恢复常规安装及 `pnpm check/start`，不再要求关闭依赖检查或保留本机链接。原图下载 PR [#14](https://github.com/dnslin/kairo-driver/pull/14) 已合并；本轮共用来源规则依赖 PR [#15](https://github.com/dnslin/kairo-driver/pull/15)，插件 PR 应在 #15 合并后合并。
 
 ## 本地检查
 
@@ -48,18 +50,31 @@ CI 的 Node 检查覆盖 Windows/Linux，集成任务引用 `v4.29.0-beta.1`；�
 
 ## 已执行验证
 
-0.2.0 本轮实际结果：
+以下为此前 0.2.0/URI 缓存修复已执行的历史结果，不代表本次原图下载改动已运行这些检查：
 
 | 命令或场景 | 结果 |
 | --- | --- |
-| `pnpm check` | TypeScript 构建通过；18 个 Node 测试通过 |
-| `python.exe -m pytest -q --tb=short`，设置 `ASTRBOT_SOURCE` | 114 个 Python/跨语言测试通过，无跳过；宿主 `audioop` 弃用警告 1 条 |
+| `pnpm check` | TypeScript 构建通过；21 个 Node 测试通过，包含 URI 图片缓存解析、歧义及路径边界回归 |
+| `python.exe -m pytest -q --tb=short`，设置 `ASTRBOT_SOURCE` | 115 个 Python/跨语言测试通过，无跳过；宿主 `audioop` 弃用警告 1 条 |
 | `python.exe -m ruff check`，范围为根目录 8 个 Python 模块及 `tests` | 通过 |
 | `python.exe -m ruff format --check`，同上 | 16 个文件格式符合要求 |
 | 独立编译产物双进程 smoke | Python 平台生命周期 + `bridge/dist/bridge.js`，实际 WebSocket/HTTP，健康检查 v2；群回复固定到原生目标；PNG/WAV/文件字节一致；应用卡片、首次工号通知、名单拒绝、同意图仅提交一次、unknown 不重发；7 次原生 Fake 调用，退出释放进程和服务 |
 | 隔离准备 smoke | 留有中断检出临时目录的全新目录，实际执行准备脚本两次均退出 0；使用本地仓库作源码来源，固定提交不变 |
+| URI 图片独立 smoke | 构建后的附件模块读取用户报错图片对应的真实 PNG 缓存，通过隔离的实际 HTTP 文件服务交给 AstrBot Image；字节一致，可解码为 300×23 缩略图；未派发聊天事件或调用模型 |
 
 独立 smoke 临时脚本和隔离数据已清理。Fake 只代替 KK9，不代替 AstrBot 类、传输或发送记录。自动测试还覆盖真实宿主 WakingCheck、真实管理员命令过滤/解析、名单各入口、原生查询失败、卡片完整预检、生命周期、数据库重开和迟到未知状态。
+
+此前缓存图片修复以两条失败回归证明已有文件被漏读，再通过完整 Node/Python 检查与上述独立运行；当时 URI 仅用于配置目录中的本地资源名匹配，尚未实现未缓存原图获取。本次改动在此基础上保留原生 `filepath_h/uri_h`，优先读取原图候选；未命中时调用当前 Driver 的 KK9 原生下载 API，而不是直接抓取 HTTP URL。自管原图缓存写入 `dataDir/attachments/<32hex>/<安全文件名>`，复用现有保留期清理，上传失败不重下，原图失败不回退缩略图。
+
+本次新增回归覆盖原图/缩略图不同字节、原生下载实际字节、下载失败保留文本、过期和未创建缓存目录、自管缓存复用和清理、大小限制、歧义及路径边界；跨语言 fixture 支持 `FakeKK9Driver.setImageResource` 注入资源，通过真实 WS/HTTP 检查 AstrBot 得到 Image。最终桥接 `PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false pnpm check` 的构建和 30 项 Node 测试通过；Python 全套 `python.exe -m pytest -q --tb=short` 为 119 项通过，最终缓存边界调整后又执行 `python.exe -m pytest -q --tb=short tests/test_integration.py`，25 项通过。修改的 Python 文件 `ruff check` 和 `ruff format --check` 通过；宿主仍有已有的 audioop 弃用警告。Windows 将非目录父路径也报告为 ENOENT 的情况先由边界回归捕获，再修正为明确目录错误，没有放宽断言。
+
+实际运行 `python.exe artifacts/tmp/original-image-smoke.py`：复用已有私聊图片 `137677807`，用本次构建的真实 Driver 从服务器原图 URI 下载一次；KK9 `nativeImage` 实际解码为 580×180，PNG 为 138182 字节。编译后的 Attachments 经隔离的真实 Python HTTP 文件服务上传，`convert_message` 生成真实 AstrBot Image，实际文件与下载原图逐字节相同。仅建立独立 CDP 连接，不调用 Driver.connect 接管生产 Hook；未发送 KK9 消息、未派发聊天事件、未调用模型，未重启现有 bridge。临时脚本和隔离目录在验证后删除。本结果证明原图输入链路，不证明生产模型识图质量。
+
+用户随后手动确认图片识别测试通过；这是当前实际使用路径的人工验收，不是代理重复运行模型得出的结论。该确认不扩展到其他模型或其他媒体，也不将 T14 的其余人工项目自动标为完成。
+
+提交前恢复标准依赖流程，实际执行 `node scripts/prepare-driver.mjs` 从远端检出 `97729bc61e131592b9b850ad9ed922ca170188c8`，再执行 `pnpm install --lockfile-only --offline` 生成锁文件和 `pnpm install --frozen-lockfile` 安装。未关闭 pnpm 依赖检查的 `pnpm check` 构建及 30 项测试通过；Python 全套再次 119 项通过，根目录模块及测试的 Ruff 检查和 16 文件格式检查通过。独立 `node artifacts/tmp/pinned-driver-smoke.mjs` 使用实际安装的固定 Driver 与桥接编译产物，经真实 HTTP 上传核对原图字节，确认不再解析到相邻开发仓库；仅 KK9 使用 Fake，未发送消息或调用模型。一次性脚本和临时目录随后清理。
+
+另对用户已发送回复只读核对发送记录、原生历史和当前 KK9 聊天组件，三者均已有对应消息，用户也确认已发送；没有补发消息、切换窗口或修改客户端 UI。页面此前更新延迟的具体触发时序未采集，不把推测写成已修复的客户端缺陷。
 
 **未执行真实 KK9 自动发送。** 用户选择自行手动验收；语音原生编码与播放、接收端图片/文件/卡片呈现、真实群提及、首次通知及客户端重启恢复均仍需手动观察。`sent` 回执不是这些观察的替代品。可执行清单见 [主说明](../README.md#5-手动验收)，状态见 [实施清单](../tasks/todo.md)。
 
@@ -81,7 +96,19 @@ CI 的 Node 检查覆盖 Windows/Linux，集成任务引用 `v4.29.0-beta.1`；�
 - [AstrBot 平台注册源码](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.0-beta.1/astrbot/core/platform/register.py)
 - [AstrBot 平台生命周期源码](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.0-beta.1/astrbot/core/platform/platform.py)
 - [AstrBot 消息模型源码](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.0-beta.1/astrbot/core/platform/astrbot_message.py)
-- [Driver 公开接口](https://github.com/dnslin/kairo-driver/blob/15eb384f38c96fbfa9f5f6064713d5740f4bc45f/src/types/index.ts)
+- [Driver 公开接口](https://github.com/dnslin/kairo-driver/blob/f12d4e39d6d92224132148722f0646aafda8a8d6/src/types/index.ts)
 - [aiohttp WebSocket 与文件响应](https://docs.aiohttp.org/en/stable/web_reference.html)
 
 官方平台教程部分示例仍采用旧构造参数，实现以验证基线源码为准。规划时调查记录保留在 [plan.md](../tasks/plan.md)，其中旧版问题是调查快照，不是当前实现说明。
+
+## 原图缓存审计修复
+
+- 原生下载每次写入独立随机 `.part` 文件，返回成功并检查文件后才重命名为最终缓存。进程中断的残留文件不会命中缓存；超时任务之后的迟到写入只影响自身临时文件，不能覆盖后续成功缓存。仍复用既有目录保留期清理，不增加锁、校验数据库或恢复状态机。
+- 内部 `normalize/downloadImage/cacheImage` 的 Driver 参数全部必填，删除仅为测试保留的无 Driver 缓存模式；测试改用实际 Fake Driver，生产入口仍传入当前已核对身份的 Driver。
+- 原图来源复用配套 Driver 的 `hasOriginalImageSource/getOriginalImageUri`，包括空原图字段拒绝缩略图降级的边界。Driver 缓存外职责不变，HTTP 上传、目录白名单、大小限制和保留期仍由桥接负责。
+
+中断和迟到写入两条新增回归修复前均失败：分别上传24字节的中断文件和被迟到写入覆盖的缓存；原子发布后通过。Driver 空原图字段两项回归也先失败后通过。实际执行 Driver `pnpm check`，build/typecheck、33文件404项测试与lint通过；桥接远端准备固定源码、`pnpm install --lockfile-only --offline`、`pnpm install --frozen-lockfile` 和标准 `pnpm check` 通过，构建及32项测试无跳过。Python全套 `python.exe -m pytest -q --tb=short` 设置 `ASTRBOT_SOURCE` 后119项通过、无跳过，保留宿主已有audioop弃用警告；Python实现未修改，没有重新声称本轮运行Ruff。
+
+运行 `node artifacts/tmp/source-rule-smoke.mjs` 和 `node artifacts/tmp/atomic-image-smoke.mjs`：前者验证本轮Driver真实原图下载到`.part`并解码；后者使用实际安装的固定Driver及桥接编译产物，经独立临时文件、重命名发布、真实鉴权HTTP上传，并重开Attachments复用缓存，1次下载、2次上传的字节均一致，580×180 PNG、138182字节。第一份脚本初次因Windows ESM路径格式在加载阶段失败，改为file URL后通过。服务、独立CDP连接及临时数据均释放，一次性脚本随后删除；没有发送消息、调用模型、接管生产Hook或重启桥接。
+
+Git HTTPS直连推送两次不可达，读取现有Windows系统代理后使用单次进程代理完成Driver推送和远端准备；没有修改持久Git代理配置。配套Driver PR [#15](https://github.com/dnslin/kairo-driver/pull/15) 与插件PR [#1](https://github.com/dnslin/astrbot_plugin_kairo/pull/1) 均只提交审查，不自动合并。

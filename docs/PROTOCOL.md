@@ -24,7 +24,7 @@ Node 主动连接 Python 的 `/ws`，HTTP/WebSocket 都使用 `Authorization: Be
 }
 ```
 
-消息主体沿用 `KK9Message`，移除 `raw`。附件保留元数据，去除 Windows `filePath/url/uri`；上传完成后增加 `file_id`，不可读取时增加 `attachment_error`。只消费 `message` 中的入站消息，忽略本人回显及 `at` 快捷事件，不进行第二次提交。
+消息主体沿用 `KK9Message`，移除 `raw`。附件保留元数据，去除 Windows `filePath/url/uri/originalFilePath/originalUri`；上传完成后增加 `file_id`，不可读取或原图下载失败时增加 `attachment_error`，其余文字继续提交。只消费 `message` 中的入站消息，忽略本人回显及 `at` 快捷事件，不进行第二次提交。
 
 Python 完成事件提交或名单拒绝后返回 `{"type":"ack","event_id":"..."}`；重复事件只确认、不再次提交。暂时性处理错误保留未确认状态并关闭连接，供桥接重放。ACK 不表示模型处理完成、回复成功或接收端已读。去重缓存和未确认队列仅保存在内存中。
 
@@ -91,4 +91,8 @@ Python 请求超时或断线后不重新发送，只查询一次原 `operation_i
 - `GET /files/{file_id}`：下载原始字节。
 - `GET /health`：返回 `{"version":2,"connected":true}`，`connected` 为当前桥接状态。
 
-所有接口需鉴权。`file_id` 为 32 位小写十六进制随机 ID；文件名去除路径和特殊字符，按 UTF-8 字节限制长度。Python 单文件上限 100 MiB，总缓存 1 GiB，保留 24 小时；Node 额外限制图片 20 MiB，发送附件默认保留 24 小时。入站本地文件仅从 `attachmentRoots` 允许的实际目录读取。未缓存 KK9 附件不自动下载，语音发送不等于完整语音接收。
+所有接口需鉴权。`file_id` 为 32 位小写十六进制随机 ID；文件名去除路径和特殊字符，按 UTF-8 字节限制长度。Python 单文件上限 100 MiB，总缓存 1 GiB，保留 24 小时；Node 额外限制图片 20 MiB，发送附件及入站原图自管缓存默认保留 24 小时。KK9 已有本地文件仅从 `attachmentRoots` 允许的实际目录读取；原生下载图片仅写入桥接自管 `dataDir/attachments/<32hex>/<安全文件名>` 并可从该目录上传。
+
+入站图片的独立原图判定与 URI 选择共用 Driver 的 `hasOriginalImageSource/getOriginalImageUri`；原图字段显式为空也不回退缩略图。允许目录内原图不存在或仅有原图远端 URI 时，通过当前 Driver 的 `downloadImage` 调用 KK9 原生接口下载；没有原图字段的单一资源可使用 `uri`。本地路径越界、候选歧义、非 ENOENT 读取错误及上传失败不触发下载。每次下载写入独立随机 `.part` 文件，成功并检查后重命名发布到最终缓存；中断残留及超时迟到写入不参与缓存命中，也不能覆盖后续成功缓存。下载成功后按同一 URI 复用缓存并刷新保留期，下载失败不上传缩略图。内部 `normalize(message, driver)` 必须传入当前 Driver，没有无 Driver 模式。此流程不增加 WS/HTTP 接口或用户配置；普通文件未缓存时仍不自动下载，语音发送不等于完整语音接收。
+
+原图接口及共用来源规则由固定 Driver 提交 `f12d4e39d6d92224132148722f0646aafda8a8d6` 提供，准备脚本、目录依赖和锁文件同步更新，不依赖本机开发链接。用户已手动确认图片识别测试通过；代理未重复调用生产模型。
