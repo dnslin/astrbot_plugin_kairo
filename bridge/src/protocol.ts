@@ -7,6 +7,7 @@ export class RequestError extends Error {
 type SendTarget = { operation_id: string; target_session_id: string };
 export type SendParams = SendTarget & (
   | { kind: 'text'; text: string; mentions?: Array<{ uid: string; name: string }>; reply_to?: string }
+  | { kind: 'voice_text'; text: string }
   | { kind: 'image' | 'file' | 'voice'; file_id: string; name?: string }
   | { kind: 'app_card'; card: KK9AppMsgOptions }
   | { kind: 'url_card'; card: KK9UrlCardOptions }
@@ -81,6 +82,11 @@ export function parseRequest(value: unknown): BridgeRequest {
       if (params.reply_to !== undefined) result.reply_to = text(params.reply_to, 'reply_to');
       break;
     }
+    case 'voice_text': {
+      fields(params, ['operation_id', 'target_session_id', 'kind', 'text'], 'send');
+      result = { ...target, kind: params.kind, text: text(params.text, 'text', 128_000) };
+      break;
+    }
     case 'image': case 'file': case 'voice': {
       fields(params, ['operation_id', 'target_session_id', 'kind', 'file_id', 'name'], 'send');
       const file_id = text(params.file_id, 'file_id');
@@ -115,7 +121,7 @@ export function parseRequest(value: unknown): BridgeRequest {
       result = { ...target, kind: params.kind, card: { title: cardText(card, 'title'), content: cardText(card, 'content'), bizUrl, bizType: card.bizType, ...(summary !== undefined ? { summary: summary as string[] } : {}) } };
       break;
     }
-    default: throw new RequestError('UNSUPPORTED_MESSAGE', '仅支持 text、image、file、voice、app_card、url_card、biz_card');
+    default: throw new RequestError('UNSUPPORTED_MESSAGE', '仅支持 text、voice_text、image、file、voice、app_card、url_card、biz_card');
   }
   return { type: 'request', id, action: 'send', params: result };
 }

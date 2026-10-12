@@ -8,7 +8,7 @@
 
 在本目录的 PowerShell 中执行：
 
-本版固定包含原图字段、`downloadImage` 及共用来源规则的 Driver 提交 `f12d4e39d6d92224132148722f0646aafda8a8d6`；准备脚本、目录依赖和锁文件已同步，不依赖本机开发链接。
+本版固定已发布 [Driver 2.0.1](https://github.com/dnslin/kairo-driver/releases/tag/v2.0.1) 提交 `8208e78b1134484f8b374edb33ee2d595e624591`，包含原图字段、`downloadImage`、共用来源规则、文本 TTS 标准代理接入和代理超时连接释放；准备脚本、目录依赖和锁文件已同步，不依赖本机开发链接。
 
 更新已有安装时先停止旧桥接，再执行准备、冻结安装及构建；随后恢复正常的 `pnpm start`。不需要修改配置、清理发送数据库或关闭 pnpm 的依赖检查。
 
@@ -86,7 +86,20 @@ KK9 已有本地附件只从 `attachmentRoots` 读取；原生下载的图片也
 
 允许目录中的原图路径已过期或原图缓存没有命中时，桥接调用当前 Driver 的 `downloadImage`，由 KK9 原生 IPC 下载原图到 `dataDir/attachments/<32位十六进制资源摘要>/<安全文件名>`，校验真实文件和 20 MiB 限制后再上传实际字节。相同 URI 复用自管缓存，上传失败不会触发重新下载；缓存按 `fileRetentionHours` 清理。存在原图字段但缺少原图 URI 时不回退缩略图 URI；路径越界、同名歧义和非 ENOENT 读取错误不会触发下载。桥接不直接抓取消息中的 HTTP URL，不新增下载配置。
 
-AstrBot 发来的附件按 `file_id` 从配置好的服务下载到 `dataDir`，然后交给 Driver。图片限制 20 MiB，普通文件和语音通道限制 100 MiB。语音通过 `sendVoice({filePath})` 发送有效 WAV/MP3，不新增文字转语音服务。文本支持 `@` 和引用；图片、文件、语音及三类卡片不支持附带原生引用或提及。
+AstrBot 发来的附件按 `file_id` 从配置好的服务下载到 `dataDir`，然后交给 Driver。图片限制 20 MiB，普通文件和语音通道限制 100 MiB。文件语音通过 `sendVoice({filePath})` 发送有效 WAV/MP3；文字语音使用下节独立请求，不用文件冒充。文本支持 `@` 和引用；图片、文件、语音及三类卡片不支持附带原生引用或提及。
+
+## 按需文字语音
+
+Python 的专用工具经 `voice_text + text` 请求直接调用已有 `Driver.sendVoice({text})`，不新增服务，不调用 AstrBot TTS 或 FFmpeg。默认音色由 Driver 决定，自动语音开关不会被插件修改；普通对话仍应文字回复，工具选择由模型判断。
+
+运行桥接的 Node 进程必须能访问 Edge。若网络需要代理，在同一 PowerShell 启动终端中设置实际地址，例如：
+
+```powershell
+$env:HTTPS_PROXY = "http://127.0.0.1:7897"
+pnpm start
+```
+
+Driver 优先非空 `HTTPS_PROXY`，其次非空 `HTTP_PROXY`，均未设置保持直连；不会自动读取 Windows 系统代理或 AstrBot 配置，也不在代理失败后尝试直连。Python 对文字语音使用 90 秒独立请求预算，排队或断线仍可能产生 unknown，只查原意图不重发。语音播放及卡片呈现需接收端手动验收，合成/编码通过不等于已播放。
 
 ## 连接与发送记录
 
@@ -99,7 +112,7 @@ AstrBot 发来的附件按 `file_id` 从配置好的服务下载到 `dataDir`，
 
 ## 依赖与验证
 
-Driver 固定到 `dnslin/kairo-driver` 提交 `f12d4e39d6d92224132148722f0646aafda8a8d6`。新旧 Driver 的包版本同为 2.0.0，不能凭包版本判断接口。准备脚本在 `vendor/kairo-driver-f12d4e39d6d9` 检出固定源码并构建，通过同名 `file:` 目录依赖消费；不再应用旧 `driver-native-send.patch`，仅保留上游两份音频依赖补丁。
+Driver 固定到 `dnslin/kairo-driver` 的 2.0.1 发布提交 `8208e78b1134484f8b374edb33ee2d595e624591`。准备脚本在 `vendor/kairo-driver-8208e78b1134` 检出固定源码并构建，通过同名 `file:` 目录依赖消费；不再应用旧 `driver-native-send.patch`，保留并同步上游两份音频依赖补丁。
 
 准备脚本使用独立临时检出目录，检出完成才放入最终目录；中断遗留的临时目录不阻止下次准备。已有最终目录若提交不符或跟踪文件被修改，报告路径和原因，不 reset 或覆盖使用者修改。可用 `KAIRO_DRIVER_SOURCE` 指定源码仓库来源，固定提交要求不变。
 
@@ -121,3 +134,5 @@ pnpm check
 自动检查覆盖协议 v2、原生会话路由、三类卡片和媒体分派、工号首次通知、方向筛选、ACK 重放、发送防重、账号校验和附件路径限制。已完成实际 WebSocket/HTTP 双进程离线 smoke；真实 KK9 收发、语音编码及播放、卡片呈现、缓存格式与 CDP 恢复仍需手动验收，步骤见[主说明](../README.md#5-手动验收)。
 
 本轮原图缓存审计修复的桥接构建和32项Node回归、Python全套119项通过；独立编译产物烟测验证真实原图下载到独占临时文件、完成后发布、鉴权HTTP上传及重开缓存复用，580×180 PNG、138182字节一致。用户此前已手动确认图片识别测试通过，本轮代理未重复发送或调用模型。具体命令、边界及历史结果见[开发说明](../docs/DEVELOPMENT.md#原图缓存审计修复)。
+
+按需工具实施阶段验证：配套 Driver 完整检查 409 项、桥接构建及 35 项 Node 测试、Python 最终全套 186 项通过；编译产物真实 WS/SQLite 闭环验证四类输出及防重，仅 KK9 使用 Fake。正常固定 Driver 通过标准进程代理完成真实 Edge 合成及 KK AMR 编码/回解，没有发送消息；接收端播放和卡片呈现仍需人工验收。后续发布固定到 Driver 2.0.1，补充代理 CONNECT 超时释放修复；具体发布检查、失败记录及验证边界见[开发说明](../docs/DEVELOPMENT.md#按需语音与原生卡片工具方案-b)。

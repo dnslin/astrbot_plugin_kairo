@@ -205,7 +205,8 @@ async def test_real_bridge_roundtrip_media_and_saved_group_route(connection):
     assert event.get_sender_id() == "42"
     assert event.get_group_id() == "793803"
     assert any(isinstance(part, At) and str(part.qq) == "100" for part in event.get_messages())
-    image = next(part for part in event.get_messages() if isinstance(part, Image))
+    image = next((part for part in event.get_messages() if isinstance(part, Image)), None)
+    assert image is not None, event.message_obj.raw_message
     attachment = next(part for part in event.get_messages() if isinstance(part, File))
     assert Path(await image.convert_to_file_path()).read_bytes() == PNG
     assert Path(await attachment.get_file()).read_text(encoding="utf-8") == "从 KK9 上传的内容"
@@ -331,6 +332,52 @@ async def test_voice_file_transfer_uses_actual_wav_in_both_session_types(connect
     assert base64.b64decode(calls[1]["bytes_base64"]) == data
     assert all(call["options"]["targetSessionId"] == native_id for call in calls)
     assert Path(calls[1]["payload"]["filePath"]) != path
+
+
+@pytest.mark.parametrize("native_id", ["716791", "793803"])
+async def test_text_voice_preserves_intent_and_native_target(connection, native_id):
+    adapter, command, _, _ = connection
+    client = adapter.get_client()
+    result = await client.send_voice_text(
+        native_id, "直接由 Driver 朗读", operation_id="text-voice"
+    )
+    assert result["status"] == "sent" and result["messageId"]
+    assert result["operationId"] == "text-voice"
+    assert (
+        await client.send_voice_text(native_id, "直接由 Driver 朗读", operation_id="text-voice")
+        == result
+    )
+    calls = await command("calls")
+    assert len(calls) == 1
+    assert calls[0]["type"] == "voice"
+    assert calls[0]["payload"] == {"text": "直接由 Driver 朗读"}
+    assert calls[0]["options"]["targetSessionId"] == native_id
+    with pytest.raises(BridgeError, match="fingerprint"):
+        await client.send_voice_text(native_id, "不同的正文", operation_id="text-voice")
+    assert await client.get_send_status("text-voice") == result
+    assert len(await command("calls")) == 1
+
+
+async def test_text_voice_unknown_survives_recreation_without_resubmission(connection):
+    adapter, command, _, _ = connection
+    client = adapter.get_client()
+    await command("behavior", behavior={"mode": "post_trigger_timeout"})
+    result = await client.send_voice_text("716791", "可能已发出", operation_id="voice-unknown")
+    assert result["status"] == "unknown"
+    assert result["operationId"] == "voice-unknown"
+    await command("health")
+    async with asyncio.timeout(10):
+        while await command("generations") < 2 or not adapter.server.connected:
+            await asyncio.sleep(0.02)
+    assert (
+        await client.send_voice_text("716791", "可能已发出", operation_id="voice-unknown") == result
+    )
+    assert await client.get_send_status("voice-unknown") == result
+    assert len(await command("calls")) == 1
+    next_result = await client.send_voice_text("716791", "恢复后的新语音")
+    assert next_result["status"] == "sent"
+    assert (await command("calls"))[-1]["payload"] == {"text": "恢复后的新语音"}
+    assert len(await command("calls")) == 2
 
 
 @pytest.mark.parametrize("native_id", ["716791", "793803"])

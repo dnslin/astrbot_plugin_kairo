@@ -22,6 +22,25 @@ test('只接受原生正整数字符串会话与公开请求，不接受路径�
   assert.doesNotThrow(() => parseRequest({ ...request, params: { operation_id: 'o1', target_session_id: '23', kind: 'text', text: '', mentions: [{ uid: 'all', name: '所有人' }] } }));
 });
 
+test('文本语音只接受非空文字及明确发送意图，长度按 UTF-16 限制', () => {
+  const params = { operation_id: 'voice-text', target_session_id: '23', kind: 'voice_text', text: '  请读出这段文字\n保留换行  ' };
+  assert.deepEqual(parseRequest({ ...request, params }).params, params);
+  assert.doesNotThrow(() => parseRequest({ ...request, params: { ...params, text: '😀'.repeat(64_000) } }));
+  for (const invalid of ['', '  ', '\r\n', undefined, null, 123, true, {}, [], '😀'.repeat(64_001), 'a'.repeat(128_001)]) {
+    assert.throws(() => parseRequest({ ...request, params: { ...params, text: invalid } }), /text/);
+  }
+});
+
+test('文本语音拒绝文件、音色、引用、提及及所有额外字段', () => {
+  const params = { operation_id: 'voice-text', target_session_id: '23', kind: 'voice_text', text: '读出正文' };
+  for (const extra of [
+    { file_id: 'a'.repeat(32) }, { filePath: '/tmp/audio.wav' }, { voice: 'zh-CN-XiaoxiaoNeural' },
+    { reply_to: '101' }, { quote: '101' }, { mentions: [] }, { name: 'audio.wav' }, { card: {} }, { extra: true },
+  ]) {
+    assert.throws(() => parseRequest({ ...request, params: { ...params, ...extra } }), /不支持/);
+  }
+});
+
 test('查询无须发送operation_id，工号trim但保留大小写', () => {
   assert.deepEqual(parseRequest({ type: 'request', id: 'q', action: 'get_sessions', params: {} }).params, {});
   assert.deepEqual(parseRequest({ type: 'request', id: 'q', action: 'get_user_profile', params: { user_id: '32' } }).params, { user_id: '32' });

@@ -2,6 +2,8 @@
 
 状态：用户已回复“按方案开始”，批准能力划分、默认行为和实施顺序。代码实现与离线验证已完成，结果见 [todo.md](todo.md)。用户随后选择自行手动测试真实 KK9；本轮未自动向真实员工或群发送测试消息，真机验收尚未完成，步骤见 [README](../README.md#5-手动验收)。
 
+本文件第8节为后续提出的“按需语音与原生卡片工具”补充方案，尚未批准实施，不属于上文已批准范围；原有T14人工验收保留，不因新方案自动完成。
+
 ## 1. 已确认范围
 
 用户明确要求：群聊、黑白名单、图片/语音/文件发送、群聊 @ 监听、私聊与群聊卡片回复、通过工号主动发起单独私聊通知。
@@ -197,3 +199,69 @@ D:/Person/AstrBot/.venv/Scripts/python.exe -m ruff format --check .
 ## 审批点
 
 本方案已获整体审批，代码与离线验收已按清单完成。真实 KK9 收发、媒体播放和卡片呈现由用户手动验收，不以离线 Fake 或 sent 回执代替接收端观察。
+
+## 8. 按需语音与 KK 原生卡片工具（方案 B 已确认）
+
+### 8.1 已确认的选择
+
+用户选择 Driver 文本 TTS 的方案 B：插件工具 → 公共客户端 → 明确桥接请求 → Driver 合成及原生发送。模型按自然语言要求选择能力，不另加关键词判断、第二个意图模型或严格指令门禁；这不是零误触承诺。不使用方案 A，不调用 AstrBot TTS，不安装宿主 FFmpeg，不建立双引擎或自动回退。
+
+普通聊天继续文字。按需卡片复用已存在的三类原生消息；合并转发、按钮回调、审批流程及真实业务对象创建仍不在本轮范围。插件不会自动修改 `reply_format`、自动语音总开关、人格工具集合或生产进程。
+
+### 8.2 模块与依赖
+
+| 模块 | 职责 | 依赖及位置 |
+| --- | --- | --- |
+| 按需工具 | 四个显式 schema 工具、当前 Kairo 请求筛选、当前事件的一次尝试 | `main.py`、`tools.py`，AstrBot FunctionTool/ToolSet/默认聊天 Agent |
+| 文本语音客户端 | 复查名单、固定原生目标、原生结果及独立等待预算 | `client.py`、`transport.py` |
+| 明确语音分派 | `voice_text + text` 直接进入已有 `sendVoice({text})` | `bridge/src/protocol.ts`、`bridge/src/bridge.ts`，不经过附件通道 |
+| 三类卡片 | 普通文字构造固定 Json 字段，复用完整卡片预检和发送 | `tools.py` → `event.send()` → 既有 `KairoClient.send_chain()` |
+| Driver 网络前提 | 把非空标准进程代理显式传入已有 Edge SDK | Driver `voice-ops.ts`，不新增语音引擎、依赖或 KK 配置字段 |
+
+### 8.3 工具契约
+
+| 工具 | 模型输入 |
+| --- | --- |
+| `kairo_send_voice` | `text` |
+| `kairo_send_app_card` | `title`, `text`, 可选 `linkUrl` |
+| `kairo_send_url_card` | `title`, `summary`, `linkUrl`, 可选 `picUrl` |
+| `kairo_send_biz_card` | `title`, `text`, `bizType`, 真实 `bizUrl`, 可选字符串数组 `summary` |
+
+- 必须是真实 `KairoMessageEvent` 且平台名为 `kairo`；模型参数不接受目标会话、工号、文件路径、任意 Json 或 HTML。使用事件保留的原生目标和群发送者，不能由改写后的上下文标识重定向。
+- 初始化注册一次，工具归属于主插件，启停及重载由宿主管理。`on_llm_request` 只从非 Kairo 的本次集合移除本插件工具，不修改全局 active、不补回人格或用户停用的工具；`func_tool=None` 保持不变。
+- 本地参数无效时不提交，允许纠正参数；首次实际尝试在 await 前记录于当前事件，同能力的重复/并发调用共享首次结果，失败或 unknown 不重新提交。不同事件与不同能力状态独立，不新增持久状态机、锁或第二份发送数据库。
+- 只有原生确认成功才返回 `None`，让默认主聊天 Agent 不再调用下一轮模型补“已发送”。同批剩余工具仍由宿主执行；前述一次尝试记录防重复。不能撤回工具前已输出的前言，不以 `stop_event` 作为成功协议。
+- 失败保留原生原因，unknown 保留操作 ID，只查询原意图。执行等待被取消不重新提交；不将异常或超时冒充成功。
+- 当前验证范围为默认 internal/tool-loop 主聊天 Agent，不宣称覆盖第三方 Agent 或子 Agent。
+
+### 8.4 文本语音与网络
+
+新增 `KairoClient.send_voice_text(target_session_id, text, sender_id=None, operation_id=None) -> dict`，沿用收发名单和 `sent/failed/unknown`。桥接新增 `kind=voice_text`，只接受意图 ID、原生目标和非空正文；不传音色、引用、提及或附件。原 `voice + file_id` 仍用于用户提供的有效 WAV/MP3，二者不是兼容回退。
+
+固定 Driver 使用 Edge 及 KK 内置 AMR-NB 编码器，默认音色 `zh-CN-XiaoxiaoNeural`；不继承 AstrBot 的 TTS 提供商、音色、语速或代理。文字语音单请求等待 90 秒：合成总体 deadline 30 秒、编码最多 30 秒、提交及回执最多 20 秒并留余量。普通请求默认 30 秒不变，默认工具执行时限 120 秒建议保留；排队或断线仍可能产生 unknown，不重试发送。
+
+实际合成发现现有网络直连 Edge 返回 403；仅向 SDK 显式传入本机已有代理后，实际合成及 KK 原生 AMR 编码/回解通过。为使正常生产入口获得同一网络路径，Driver 读取 Node 进程非空 `HTTPS_PROXY`，其次 `HTTP_PROXY`，trim 后传入 SDK 已有 `proxy` 选项。未设置保持直连；指定代理失败不换路线。不读取 Windows 注册表、AstrBot 配置或 `ALL_PROXY`，不加 KK 专用代理参数。配套源码、准备脚本、目录依赖和锁文件一起固定，不能只留诊断进程里的临时注入。
+
+### 8.5 卡片语义
+
+应用正文由插件转义 HTML、归一化换行并转为 `<br>`；链接摘要和业务正文遵守既有普通文字契约。三类消息全部复用原 `KairoClient._card_params` 的完整预检，不新增协议或编写客户端内部载荷。
+
+`bizType=1` 为任务样式、`2` 为日程样式。业务卡片不创建对象；缺少真实路径时不得编造。卡片单独发送，不附带 Reply/At。保持 `reply_format=text` 才是按需卡片；现有 `card` 模式仍把所有普通文字包装为应用卡片。
+
+### 8.6 验证与交付边界
+
+自动验证覆盖：真实框架工具注册及请求级集合、跨平台拒绝、人格停用保持、原始目标、动态名单、同批重复/并发、跨事件独立、特殊字符/换行、schema 与 UTF-16 边界、失败及 unknown、取消后不重发；真实默认 Agent 验证 sent 后只有一轮模型，失败/未知继续解释。Node 与 Python 双进程通过真实 WebSocket 和持久 SQLite 验证明确语音类型及意图冲突；编译产物独立运行仅用 Driver Fake 替代 KK9。
+
+Driver 代理回归使用本地真实 CONNECT 拒绝服务器，不访问外网；真实合成与 KK 编码另行通过独立 CDP 连接观察，不调用 Driver.connect 接管生产 Hook，也不发送消息。命令为两个仓库的 `pnpm check`、插件 Python 全套 pytest 及相关 Ruff 检查；最终结果记录在开发说明与实施清单，不以规划描述替代证据。
+
+私聊/群接收端实际播放、卡片呈现/跳转、普通或否定表达的真实模型选择仍需用户指定测试目标并人工观察。未授权不自动发送，不把生成 AMR、原生 sent 或替身测试当作播放/送达验收；不勾选原 T14 的其余人工项目。
+
+### 8.7 API 依据
+
+- [AstrBot 工具定义、注册与 schema](https://docs.astrbot.app/dev/star/guides/ai.html)
+- [消息发送与 Json/Record](https://docs.astrbot.app/dev/star/guides/send-message.html)
+- [LLM 请求钩子](https://docs.astrbot.app/dev/star/plugin.html#llm-请求时)
+- [Edge SDK 已有代理选项](https://github.com/SchneeHertz/node-edge-tts)
+
+实现以本地 AstrBot `4.29.0-beta.1` 源码的 FunctionTool、Context.add_llm_tools、FunctionToolExecutor 和 ToolLoopAgentRunner 为验证基线；不修改宿主枚举、核心执行器或内置 send_message_to_user。
+

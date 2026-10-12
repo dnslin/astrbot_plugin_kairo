@@ -1,7 +1,16 @@
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
+from astrbot.core.provider.entities import ProviderRequest
 from astrbot.core.star.filter.command import GreedyStr
 
+from .tools import (
+    KAIRO_TOOL_NAMES,
+    KairoSendAppCardTool,
+    KairoSendBizCardTool,
+    KairoSendUrlCardTool,
+    KairoSendVoiceTool,
+    is_kairo_event,
+)
 from .transport import BridgeError
 
 
@@ -11,6 +20,25 @@ class KairoPlugin(Star):
     def __init__(self, context: Context) -> None:
         super().__init__(context)
         from .adapter import KairoPlatformAdapter  # noqa: F401
+
+        tools = (
+            KairoSendVoiceTool(),
+            KairoSendAppCardTool(),
+            KairoSendUrlCardTool(),
+            KairoSendBizCardTool(),
+        )
+        for tool in tools:
+            # Context 按 __module__ 标记工具归属，保持启停/重载与主插件一致。
+            tool.__module__ = type(self).__module__
+        context.add_llm_tools(*tools)
+
+    @filter.on_llm_request()
+    async def filter_kairo_tools(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
+        """只移除不适用工具，不补回人格或用户已移除的工具。"""
+        if req.func_tool is None or is_kairo_event(event):
+            return
+        for name in KAIRO_TOOL_NAMES:
+            req.func_tool.remove_tool(name)
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("kairo notify")

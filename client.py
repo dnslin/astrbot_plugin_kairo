@@ -56,7 +56,12 @@ class KairoClient:
             raise BridgeError("UNSUPPORTED_SESSION", f"不支持的 KK9 会话类型：{session['type']}")
 
     async def _send_operation(
-        self, action: str, params: dict, *, operation_id: str | None = None
+        self,
+        action: str,
+        params: dict,
+        *,
+        operation_id: str | None = None,
+        timeout: float | None = None,
     ) -> dict:
         """Submit once and reconcile only the same intent after an uncertain result."""
         operation_id = uuid4().hex if operation_id is None else operation_id.strip()
@@ -64,7 +69,7 @@ class KairoClient:
             raise ValueError("operation_id 不能为空")
         params = {**params, "operation_id": operation_id}
         try:
-            result = await self._server.request(action, params)
+            result = await self._server.request(action, params, timeout=timeout)
         except BridgeError as exc:
             if exc.code not in {"TIMEOUT", "CONNECTION_LOST"}:
                 raise
@@ -105,6 +110,69 @@ class KairoClient:
         self._policy.check_employee(login_name)
         return await self._send_operation(
             "send_to_user", {"login_name": login_name, "text": text}, operation_id=operation_id
+        )
+
+    async def send_voice_text(
+        self,
+        target_session_id: str,
+        text: str,
+        *,
+        sender_id: str | None = None,
+        operation_id: str | None = None,
+    ) -> dict:
+        """由 Driver 合成并发送语音，返回原生结果，不调用宿主 TTS。
+
+        Args:
+            target_session_id: 明确的原生会话 ID。
+            text: 要朗读的非空文字。
+            sender_id: 回复群消息时保留的原始员工 UID，用于名单复查。
+            operation_id: 同一发送意图的稳定 ID；未知结果只查询，不重发。
+
+        Returns:
+            含 operationId 的 sent/failed/unknown 原生发送结果。
+        """
+        if (
+            not target_session_id.isascii()
+            or not target_session_id.isdecimal()
+            or target_session_id.startswith("0")
+        ):
+            raise ValueError(f"需要原生 KK9 会话 ID：{target_session_id}")
+        if not text.strip():
+            raise ValueError("语音正文不能为空")
+        await self._check_target(target_session_id, sender_id)
+        # Driver 合成最多30秒、AMR编码最多30秒、原生提交及回执最多20秒。
+        return await self._send_operation(
+            "send",
+            {"kind": "voice_text", "target_session_id": target_session_id, "text": text},
+            operation_id=operation_id,
+            timeout=90,
+        )
+
+    async def send_card(
+        self,
+        target_session_id: str,
+        card: dict,
+        *,
+        sender_id: str | None = None,
+        operation_id: str | None = None,
+    ) -> dict:
+        """发送一张 Kairo Json 卡片，返回含稳定操作 ID 的原生结果。
+
+        card 使用 kairo.app/kairo.url/kairo.biz 的既有 Json 字段；名单和
+        完整卡片预检与消息链一致。调用方可在等待取消后查询同一 operation_id。
+        """
+        if (
+            not target_session_id.isascii()
+            or not target_session_id.isdecimal()
+            or target_session_id.startswith("0")
+        ):
+            raise ValueError(f"需要原生 KK9 会话 ID：{target_session_id}")
+        params = self._card_params(card)
+        await self._check_target(target_session_id, sender_id)
+        return await self._send_operation(
+            "send",
+            {**params, "target_session_id": target_session_id},
+            operation_id=operation_id,
         )
 
     async def get_send_status(self, operation_id: str) -> dict:

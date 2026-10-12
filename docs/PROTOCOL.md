@@ -61,11 +61,14 @@ Python 完成事件提交或名单拒绝后返回 `{"type":"ack","event_id":"...
 | `image` | `file_id`；可选 `name` | `sendImage` |
 | `file` | `file_id`；可选 `name` | `sendFile` |
 | `voice` | `file_id`；可选 `name` | `sendVoice({filePath})` |
+| `voice_text` | 非空 `text`，最长 128000 UTF-16 单位 | `sendVoice({text})`，不传附件 |
 | `app_card` | `card:{title,content,linkUrl?,pcAppCode?}` | `sendAppMessage` |
 | `url_card` | `card:{title,summary,linkUrl,picUrl?}` | `sendUrlCard` |
 | `biz_card` | `card:{title,content,bizType,bizUrl,summary?}` | `sendBizMessage` |
 
 非文本消息不接受引用/提及。文件字段不接受本地路径或任意 URL；先通过附件接口传输实际字节。`mentions` 中 `uid="all"` 表示全体；正文仅在包含提及时可以为空。卡片文字字段非空、最长 128000 UTF-16 单位；额外字段被拒绝。业务卡片 `bizType=1|2`，`bizUrl` 是以 `/` 开头且非 `//` 开头的相对路径，`summary` 为字符串数组。
+
+`voice_text` 只接受 `operation_id/target_session_id/kind/text`，不接受音色、文件、路径、引用或提及；现有 `voice + file_id` 继续用于发送实际音频文件，二者不是兼容回退。Python 仅对文字语音使用 90 秒请求时限，不改变其他请求的默认 30 秒；排队时间包含在请求等待内。
 
 ## 响应与发送意图
 
@@ -81,9 +84,11 @@ Python 完成事件提交或名单拒绝后返回 `{"type":"ack","event_id":"...
 
 SQLite 在触发发送前声明意图。同一 ID 的目标、工号、内容、类型、引用或提及不同会冲突；相同意图重复调用不会再次触发，前置失败也不重新提交。发送记录保留正式会话和原生回执，迟到 `unknown` 不覆盖 `sent/failed`。
 
-Python 请求超时或断线后不重新发送，只查询一次原 `operation_id`。仍未知则保留操作 ID 和原因；`notify_employee` 返回结果供调用方处理，`send_chain` 抛出含 `result` 的 `BridgeError`。协议不保证进程重启后的入站补偿或端到端恰好一次处理。
+Python 请求超时或断线后不重新发送，只查询一次原 `operation_id`。仍未知则保留操作 ID 和原因；`notify_employee`、`send_voice_text`、单卡片 `send_card` 返回结果供调用方处理，`send_chain` 抛出含 `result` 的 `BridgeError`。四类按需工具在提交前保存操作 ID，等待取消后仍能核查原意图。协议不保证进程重启后的入站补偿或端到端恰好一次处理。
 
 员工和群黑白名单由 Python 公共客户端统一执行；Bridge RPC 是内部传输，不是另一个面向插件的无名单发送 API。管理员指令、事件回复和主动发送都经过该客户端。
+
+模型工具只使用真实 `KairoMessageEvent` 的原始会话与发送者，不从模型参数接收目标；非 Kairo 请求仅移除本插件工具，不修改全局启停或补回人格移除的工具。每事件、每能力的一次尝试记录只防止本事件重复调用，不替代 Driver 的持久发送记录。
 
 ## 附件与健康接口
 
@@ -95,4 +100,4 @@ Python 请求超时或断线后不重新发送，只查询一次原 `operation_i
 
 入站图片的独立原图判定与 URI 选择共用 Driver 的 `hasOriginalImageSource/getOriginalImageUri`；原图字段显式为空也不回退缩略图。允许目录内原图不存在或仅有原图远端 URI 时，通过当前 Driver 的 `downloadImage` 调用 KK9 原生接口下载；没有原图字段的单一资源可使用 `uri`。本地路径越界、候选歧义、非 ENOENT 读取错误及上传失败不触发下载。每次下载写入独立随机 `.part` 文件，成功并检查后重命名发布到最终缓存；中断残留及超时迟到写入不参与缓存命中，也不能覆盖后续成功缓存。下载成功后按同一 URI 复用缓存并刷新保留期，下载失败不上传缩略图。内部 `normalize(message, driver)` 必须传入当前 Driver，没有无 Driver 模式。此流程不增加 WS/HTTP 接口或用户配置；普通文件未缓存时仍不自动下载，语音发送不等于完整语音接收。
 
-原图接口及共用来源规则由固定 Driver 提交 `f12d4e39d6d92224132148722f0646aafda8a8d6` 提供，准备脚本、目录依赖和锁文件同步更新，不依赖本机开发链接。用户已手动确认图片识别测试通过；代理未重复调用生产模型。
+当前配套 Driver 固定到已发布 2.0.1 提交 `8208e78b1134484f8b374edb33ee2d595e624591`，保留共用原图来源规则，把标准 Node 进程代理显式传给既有 Edge TTS SDK，并在代理 CONNECT 超时时取消底层连接。准备脚本、目录依赖、两份音频补丁和锁文件同步更新，不依赖本机开发链接。用户此前已手动确认图片识别测试通过；本轮未重复调用生产模型。

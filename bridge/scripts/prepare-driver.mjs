@@ -5,9 +5,9 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const revision = 'f12d4e39d6d92224132148722f0646aafda8a8d6';
+const revision = '8208e78b1134484f8b374edb33ee2d595e624591';
 // 新目录避免覆盖旧版本 vendor 中已经应用的补丁或用户修改。
-const source = resolve(root, 'vendor', 'kairo-driver-f12d4e39d6d9');
+const source = resolve(root, 'vendor', 'kairo-driver-8208e78b1134');
 const repository = process.env.KAIRO_DRIVER_SOURCE || 'https://github.com/dnslin/kairo-driver.git';
 const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
 

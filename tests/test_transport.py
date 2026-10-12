@@ -132,6 +132,32 @@ async def test_timeout_never_reissues_send(server):
         await ws.close()
 
 
+async def test_request_budget_does_not_extend_other_pending_requests(server):
+    async with aiohttp.ClientSession() as client:
+        ws = await connect(client, server)
+        await ws.receive_json()
+        long_request = asyncio.create_task(
+            server.request("send", {"operation_id": "voice"}, timeout=2)
+        )
+        long_message = await ws.receive_json()
+        normal_request = asyncio.create_task(server.request("send", {"operation_id": "normal"}))
+        await ws.receive_json()
+        with pytest.raises(BridgeError) as exc:
+            await normal_request
+        assert exc.value.code == "TIMEOUT"
+        assert not long_request.done()
+        await ws.send_json(
+            {
+                "type": "response",
+                "id": long_message["id"],
+                "ok": True,
+                "result": {"status": "sent", "messageId": "900"},
+            }
+        )
+        assert await long_request == {"status": "sent", "messageId": "900"}
+        await ws.close()
+
+
 async def test_disconnect_fails_pending_as_unknown(server):
     async with aiohttp.ClientSession() as client:
         ws = await connect(client, server)

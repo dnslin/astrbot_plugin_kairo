@@ -8,7 +8,8 @@
 - `policy.py`：每个平台实例共用员工/群规则，判定时读取当前配置。
 - `client.py`：事件回复、主动发送、媒体、卡片和工号通知的共用入口，不向外暴露原始 RPC。
 - `adapter.py` / `event.py`：宿主注册、生命周期、事件提交和回复目标。
-- `main.py`：复用 AstrBot ADMIN 权限与真实命令解析，通知正文保留空格和换行。
+- `main.py`：插件工具注册、非 Kairo 请求筛选及 ADMIN 通知命令；通知正文保留空格和换行。
+- `tools.py`：当前真实 Kairo 事件的语音和三类卡片工具、普通文字到固定卡片字段、一次尝试及原生结果处理。
 - `transport.py` / `bridge/src`：协议 v2、WebSocket、鉴权文件传输、Driver 分派及持久发送记录。
 
 不建立旧协议、旧界面会话 ID 或旧发送补丁兼容层。用户已确认无需旧数据迁移；现存运行目录不由准备脚本自动删除。
@@ -16,14 +17,16 @@
 ## 依赖来源
 
 - AstrBot 验证基线：`v4.29.0-beta.1`，元数据约束 `>=4.29.0b1,<5`。该基线不是稳定版承诺。
-- Driver 固定提交：`f12d4e39d6d92224132148722f0646aafda8a8d6`。新旧包均为 2.0.0，必须按源码提交而非包版本辨别接口。
+- Driver 固定提交：`8208e78b1134484f8b374edb33ee2d595e624591`，对应已先行发布的 `v2.0.1`；源码获取、目录依赖与音频补丁保持一致。
 - Python 3.12+、Node.js 22.13+（推荐 24）、pnpm 11.19.0。
 
-Python 插件只声明 `aiohttp`，AstrBot API 由宿主提供。Driver 尚未发布 npm；准备脚本固定检出、按上游锁文件安装并构建，通过 `file:vendor/kairo-driver-f12d4e39d6d9` 目录依赖消费。保留上游两份音频依赖补丁，不再应用 `driver-native-send.patch`。更新固定提交时同步准备脚本、依赖目录名和锁文件；本轮经用户授权的共用原图规则修复另外提交到 Driver PR #15。
+Python 插件只声明 `aiohttp`，AstrBot API 与工具 schema 校验依赖由宿主提供。Driver 尚未发布 npm；准备脚本固定检出、按上游锁文件安装并构建，通过 `file:vendor/kairo-driver-8208e78b1134` 目录依赖消费。保留并同步上游两份音频依赖补丁，不再应用 `driver-native-send.patch`。更新固定提交时同步准备脚本、依赖目录名、补丁和锁文件；共用原图规则来自 Driver PR #15，文字 TTS 代理与 CONNECT 超时释放修复来自已合并的 [PR #16](https://github.com/dnslin/kairo-driver/pull/16)。
 
 准备过程先在独立临时目录检出，完成后才发布最终目录；中断可重试。已有最终目录若提交不符或跟踪文件修改则明确报错，不覆盖修改。不使用本机 tarball 作为跨系统锁文件输入。
 
-原图修复最初通过本机 Driver 链接完成联调；pnpm 默认依赖检查曾将链接恢复到旧版，暴露新增接口缺失，相关失败没有被隐藏。准备脚本、目录依赖和锁文件统一固定到配套 Driver 提交，恢复常规安装及 `pnpm check/start`，不再要求关闭依赖检查或保留本机链接。原图下载 PR [#14](https://github.com/dnslin/kairo-driver/pull/14) 已合并；本轮共用来源规则依赖 PR [#15](https://github.com/dnslin/kairo-driver/pull/15)，插件 PR 应在 #15 合并后合并。
+尚未推送的新 Driver 提交可在本地验证：在桥接 PowerShell 设置 `$env:KAIRO_DRIVER_SOURCE = "D:/Person/kairo-driver"` 后执行准备脚本；只改变获取源码的仓库，不放宽固定提交校验。对外安装前必须先发布该 Driver 提交，再发布引用它的插件。该变量不是生产运行依赖，不设置本机路径链接。
+
+原图修复最初通过本机 Driver 链接完成联调；pnpm 默认依赖检查曾将链接恢复到旧版，暴露新增接口缺失，相关失败没有被隐藏。准备脚本、目录依赖和锁文件统一固定到配套 Driver 提交，恢复常规安装及 `pnpm check/start`，不再要求关闭依赖检查或保留本机链接。原图下载 PR [#14](https://github.com/dnslin/kairo-driver/pull/14)、共用来源规则 PR [#15](https://github.com/dnslin/kairo-driver/pull/15) 与文字代理 PR [#16](https://github.com/dnslin/kairo-driver/pull/16) 已合并，包含在 Driver 2.0.1 中。
 
 ## 本地检查
 
@@ -46,7 +49,7 @@ D:/Person/AstrBot/.venv/Scripts/python.exe -m ruff format --check *.py tests
 
 `tests/conftest.py` 在未指定 `ASTRBOT_ROOT` 时自动创建并清理临时宿主目录，避免框架导入规范化真实运行配置。若自行指定该变量，必须使用隔离目录并自行清理。测试关闭无关宿主 metrics 后台任务，不替换框架 API。`tests/node_fixture.mts` 只用于验证，没有面向用户的模拟模式。
 
-CI 的 Node 检查覆盖 Windows/Linux，集成任务引用 `v4.29.0-beta.1`；本轮本地结果不能替代未运行的远端 CI。
+CI 的 Node 检查覆盖 Windows/Linux，集成任务引用 `v4.29.0-beta.1`。0.3.0 功能提交 `df8b71d` 的 [PR 远端检查](https://github.com/dnslin/astrbot_plugin_kairo/actions/runs/38215687275) 已全部通过：Ubuntu/Windows 桥接及真实 AstrBot 集成；对应分支 push 检查也通过。
 
 ## 已执行验证
 
@@ -83,11 +86,13 @@ CI 的 Node 检查覆盖 Windows/Linux，集成任务引用 `v4.29.0-beta.1`；�
 调用方从 `context.get_platform_inst(platform_id).get_client()` 获取 `KairoClient`：
 
 - `notify_employee(login_name, text, operation_id=None) -> dict`：准确工号首次/已有私聊文本通知，返回原生 `sent/failed/unknown`、`operationId`，成功带正式 `sessionId`；调用错误抛 `BridgeError`。
+- `send_voice_text(target_session_id, text, sender_id=None, operation_id=None) -> dict`：当前准确原生目标的文字语音，复查名单后交给 Driver 合成，返回含 `operationId` 的原生结果；单请求等待 90 秒，不调用宿主 TTS。
+- `send_card(target_session_id, card, sender_id=None, operation_id=None) -> dict`：一张 `kairo.app/kairo.url/kairo.biz` Json 字典卡片，复用完整卡片预检和名单；返回含 `operationId` 的原生结果，调用方可提前保存 ID 并在等待取消后只查询同一意图。
 - `get_send_status(operation_id) -> dict`：只查询已存在意图，不再次发送。
 - `get_sessions() -> list[dict]`：只读原生会话，用于准确路由和群名单配置。
 - `send_chain(target_session_id, message, sender_id=None) -> None`：顺序发送支持的组件，失败或未知抛含 `result` 的 `BridgeError`；事件回复保留原群发送者作名单复查。
 
-管理员命令为 `/kairo notify <平台实例ID> <准确工号> <正文>`。不开放额外 HTTP 通知接口或模型工具。三类 Json 结构和使用示例见主说明，内部字段见 [协议 v2](PROTOCOL.md)。
+管理员命令为 `/kairo notify <平台实例ID> <准确工号> <正文>`，不开放额外 HTTP 通知接口。四个按需模型工具不提供工号通知或跨会话发送；三类 Json 结构、工具使用及网络前提见主说明，内部字段见 [协议 v2](PROTOCOL.md)。
 
 ## API 依据
 
@@ -96,7 +101,7 @@ CI 的 Node 检查覆盖 Windows/Linux，集成任务引用 `v4.29.0-beta.1`；�
 - [AstrBot 平台注册源码](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.0-beta.1/astrbot/core/platform/register.py)
 - [AstrBot 平台生命周期源码](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.0-beta.1/astrbot/core/platform/platform.py)
 - [AstrBot 消息模型源码](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.0-beta.1/astrbot/core/platform/astrbot_message.py)
-- [Driver 公开接口](https://github.com/dnslin/kairo-driver/blob/f12d4e39d6d92224132148722f0646aafda8a8d6/src/types/index.ts)
+- [Driver 公开接口](https://github.com/dnslin/kairo-driver/blob/8208e78b1134484f8b374edb33ee2d595e624591/src/types/index.ts)
 - [aiohttp WebSocket 与文件响应](https://docs.aiohttp.org/en/stable/web_reference.html)
 
 官方平台教程部分示例仍采用旧构造参数，实现以验证基线源码为准。规划时调查记录保留在 [plan.md](../tasks/plan.md)，其中旧版问题是调查快照，不是当前实现说明。
@@ -112,3 +117,43 @@ CI 的 Node 检查覆盖 Windows/Linux，集成任务引用 `v4.29.0-beta.1`；�
 运行 `node artifacts/tmp/source-rule-smoke.mjs` 和 `node artifacts/tmp/atomic-image-smoke.mjs`：前者验证本轮Driver真实原图下载到`.part`并解码；后者使用实际安装的固定Driver及桥接编译产物，经独立临时文件、重命名发布、真实鉴权HTTP上传，并重开Attachments复用缓存，1次下载、2次上传的字节均一致，580×180 PNG、138182字节。第一份脚本初次因Windows ESM路径格式在加载阶段失败，改为file URL后通过。服务、独立CDP连接及临时数据均释放，一次性脚本随后删除；没有发送消息、调用模型、接管生产Hook或重启桥接。
 
 Git HTTPS直连推送两次不可达，读取现有Windows系统代理后使用单次进程代理完成Driver推送和远端准备；没有修改持久Git代理配置。配套Driver PR [#15](https://github.com/dnslin/kairo-driver/pull/15) 与插件PR [#1](https://github.com/dnslin/astrbot_plugin_kairo/pull/1) 均只提交审查，不自动合并。
+
+## 按需语音与原生卡片工具（方案 B）
+
+`main.py/tools.py` 注册四个明确工具；请求级仅移除非 Kairo 的本插件工具，保留人格及用户停用选择。工具从真实原始事件取得目标和群发送者，发送前复查现有名单。语音经公共 `send_voice_text` 与新增 `voice_text` 请求直接进入 Driver；三类卡片经公共 `send_card` 复用既有 Json 字段、完整卡片预检和原生分派。四种工具在首次 await 前保存操作 ID，首次尝试记录在事件中，不给工具实例保存会话，不建立第二份持久发送记录。
+
+只有确认 sent 才返回 None 结束默认主聊天 Agent 下一轮续答；失败/unknown 返回原生原因与意图 ID。真实 ToolLoopAgentRunner + FunctionToolExecutor 验证同批重复只有一次提交、成功不复述而失败继续解释。曾临时颠倒语音成功条件，三条相应回归确实失败，恢复后通过；删除了工具描述措辞与构造参数复制断言，没有通过弱化消费者断言使检查变绿。
+
+### 本轮实际执行
+
+| 命令/场景 | 观察结果 |
+| --- | --- |
+| Driver `pnpm check` | 构建、类型检查、33 文件 409 项测试与 lint 通过；新增代理回归使用真实本地 CONNECT 边界，不访问外网 |
+| Driver 三个修改 TS 文件 `pnpm exec prettier --check` | 首次提示格式，格式化后通过 |
+| `KAIRO_DRIVER_SOURCE` 指向本地已提交仓库后运行 `node scripts/prepare-driver.mjs` | 固定 `faae824017f5068e80012b75680bb30de100c3da` 的独立源码目录准备、冻结安装及构建通过，不使用开发仓库链接 |
+| 桥接 `pnpm install --lockfile-only --offline`、`pnpm install --frozen-lockfile`、`pnpm check` | 新固定目录依赖与锁文件一致；构建和 35 项 Node 测试通过 |
+| AstrBot 环境 Python `-m pytest -q --tb=short --showlocals` | 最终全套 186 项通过、无跳过；保留宿主已有 audioop 弃用警告 |
+| 修改的 8 个 Python 模块/测试 `ruff check`、`ruff format --check` | 静态规则及格式通过 |
+| `python artifacts/tmp/on-demand-tools-smoke.py` | 实际安装的新固定 Driver、编译桥接/SQLite、真实 AstrBot 事件/工具/WS；4 类输出固定原生目标，成功模型 1 轮，名单拒绝 0 次提交，unknown 重复不重发，共 5 次 Fake 原生调用；连续 50 次图片 HTTP 往返字节一致 |
+| 仅对子进程设置标准 `HTTPS_PROXY`，运行 `node artifacts/tmp/text-voice-prepare-smoke.mjs` | 正常安装的固定 Driver 无临时注入，真实 Edge 合成及 KK AMR 编码/回解通过：3534 字节、4 秒、1372 毫秒；0 条聊天消息发送 |
+
+真实合成最初直连为 Edge 403，临时补 Cookie 无效，标准 Node 全局代理启动参数在该 SDK 路径也未解决。显式传 SDK 已有代理选项后成功，因而仅在 Driver 文字合成选项中读取非空 HTTPS_PROXY（优先）/HTTP_PROXY；未设置仍直连，指定代理失败不再切换路线。上游依赖及音频补丁未变，不调用 AstrBot TTS、不加 KK 专用代理配置或重试。真实运行只使用独立 CDP 连接，未调用 Driver.connect 接管生产 Hook，未调用外部模型或重启生产服务。
+
+同步新依赖后的首次完整 Python 回归曾出现 1 次原有图片往返组件缺失（StopIteration），当次原始附件错误没有输出。诊断单项通过；现已让该断言在缺图时附带完整原始消息，未放宽文件字节核对。最终全套与独立连续图片往返均未复现，根因仍未定位，不能把后续通过宣称为该问题已修复。
+
+上述实施阶段仅本地提交和验证，未发布；后续发布先完成 Driver 2.0.1，再固定插件依赖到其发布提交 `8208e78b1134484f8b374edb33ee2d595e624591`。一次性脚本及隔离数据在烟测完成后清理。真实私聊/群播放到结尾、卡片呈现/跳转及自然语言模型选择保留人工验收，不因生成 AMR 或替身 sent 勾选原 T14。
+
+### 0.3.0 发布复核
+
+配套 [Driver 2.0.1](https://github.com/dnslin/kairo-driver/releases/tag/v2.0.1) 已先行发布，固定提交 `8208e78b1134484f8b374edb33ee2d595e624591`。发布审查发现代理 CONNECT 挂起时错误虽返回但 TCP 仍存活；新增回归先失败，补丁通过 AbortSignal 取消本次代理连接后通过。Driver 冻结安装和完整检查为 33 文件 410 项、构建、类型检查及 lint 通过，没有升级其他依赖。
+
+插件实际从 GitHub 获取该提交，执行 `node scripts/prepare-driver.mjs` 完成冻结安装与构建，再执行桥接 `pnpm install --lockfile-only --offline`、`pnpm install --frozen-lockfile`、`pnpm check`，构建及 35 项测试通过。首次准备因本地 Driver 补丁含两处 CRLF、Git 发布源码已规范为 LF 而字节不一致；改为原样同步实际发布提交的补丁后通过，没有放宽补丁一致性检查。
+
+设置 `ASTRBOT_SOURCE` 后，AstrBot 环境执行 `python.exe -m pytest -q --tb=short --showlocals`：取消修复后最终 187 项通过、无跳过；`ruff check *.py tests` 和 `ruff format --check *.py tests` 通过，18 文件格式正确。保留已有 `audioop` 弃用警告，Node 保留 SQLite 实验特性警告。
+
+独立 Node 进程以内联脚本运行实际安装的发布 Driver 和 `bridge/dist`：真实 WebSocket 完成鉴权头、协议握手及文字语音/三类卡片发送，4 次 Fake 原生调用均固定到原始群目标；重复请求及状态查询没有再次提交，重开 SQLite 后四份终态仍为 sent。另以桥接实际安装的 Edge SDK 运行 `ttsPromise`，本地 CONNECT 不返回时得到原始 `Timed out` 并观察到代理 TCP 关闭，没有音频产物或外网连接。没有创建长期烟测脚本，没有发送真实聊天消息、调用生产模型或重启运行服务。
+
+发布审查另发现卡片已提交后取消等待会丢失操作 ID，语音已有稳定 ID。扩展原取消回归后，卡片先失败，修复后工具文件 64 项通过。新增公共单卡片 `send_card` 复用既有预检、名单及发送意图处理，工具在首次 await 前保存并贯通同一 ID；普通消息链接口不变。Python LSP references 返回没有可用语言服务器，使用实际调用路径、回归和独立运行补足，没有把导航失败记为成功。
+
+独立 Python 进程以内联脚本运行真实 AstrBot 平台/事件/工具、真实 HTTP/WS、编译 bridge 和 SQLite，KK9 使用已发布 Fake：三类卡片均在原生请求提交后取消等待，重复调用保留同一个 unknown 操作 ID、不再提交；原生完成后通过公共 `get_send_status` 查询原 ID，三份结果均为 sent，总原生调用仅 3 次。隔离宿主、进程、服务及临时数据库全部退出并清理，没有发送真实消息。
+
