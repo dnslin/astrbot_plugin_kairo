@@ -35,7 +35,7 @@ async def server(tmp_path):
 
 async def connect(client, server, uid="100"):
     ws = await client.ws_connect(server.test_url + "/ws", headers=HEADERS)
-    await ws.send_json({"type": "hello", "version": 1, "self_id": uid})
+    await ws.send_json({"type": "hello", "version": 2, "self_id": uid})
     return ws
 
 
@@ -48,7 +48,7 @@ async def test_auth_identity_and_one_connection(server):
         assert not server.connected
         await bad.close()
         ws = await connect(client, server)
-        assert await ws.receive_json() == {"type": "ready", "version": 1}
+        assert await ws.receive_json() == {"type": "ready", "version": 2}
         with pytest.raises(aiohttp.WSServerHandshakeError) as exc:
             await client.ws_connect(server.test_url + "/ws", headers=HEADERS)
         assert exc.value.status == 409
@@ -59,15 +59,15 @@ async def test_auth_identity_and_one_connection(server):
 async def test_ack_and_replay_deduplicate(server):
     event = {
         "type": "event",
-        "event_id": "0-42:7",
-        "message": {"id": "7", "sessionId": "0-42", "direction": "inbound"},
+        "event_id": "716791:7",
+        "message": {"id": "7", "sessionId": "716791", "direction": "inbound"},
     }
     async with aiohttp.ClientSession() as client:
         ws = await connect(client, server)
         await ws.receive_json()
         for _ in range(2):
             await ws.send_json(event)
-            assert await ws.receive_json() == {"type": "ack", "event_id": "0-42:7"}
+            assert await ws.receive_json() == {"type": "ack", "event_id": "716791:7"}
         await ws.close()
         # 确认处理函数退出后，再模拟新连接。
         for _ in range(100):
@@ -77,7 +77,7 @@ async def test_ack_and_replay_deduplicate(server):
         ws = await connect(client, server)
         await ws.receive_json()
         await ws.send_json(event)
-        assert await ws.receive_json() == {"type": "ack", "event_id": "0-42:7"}
+        assert await ws.receive_json() == {"type": "ack", "event_id": "716791:7"}
         assert len(server.received) == 1
         await ws.close()
 
@@ -95,10 +95,15 @@ async def test_event_can_await_request_without_blocking_reader(server):
         request = await ws.receive_json()
         assert request["action"] == "get_send_status"
         await ws.send_json(
-            {"type": "response", "id": request["id"], "ok": True, "result": {"status": "delivered"}}
+            {
+                "type": "response",
+                "id": request["id"],
+                "ok": True,
+                "result": {"status": "sent", "messageId": "9"},
+            }
         )
         assert await ws.receive_json() == {"type": "ack", "event_id": "a"}
-        assert server.received == [{"status": "delivered"}]
+        assert server.received == [{"status": "sent", "messageId": "9"}]
         await ws.close()
 
 
@@ -115,7 +120,12 @@ async def test_timeout_never_reissues_send(server):
         assert not server._pending
         # 迟到的结果不产生新请求，也不会损坏连接。
         await ws.send_json(
-            {"type": "response", "id": request["id"], "ok": True, "result": {"status": "delivered"}}
+            {
+                "type": "response",
+                "id": request["id"],
+                "ok": True,
+                "result": {"status": "sent", "messageId": "9"},
+            }
         )
         await ws.send_json({"type": "event", "event_id": "still-live", "message": {}})
         assert (await ws.receive_json())["type"] == "ack"

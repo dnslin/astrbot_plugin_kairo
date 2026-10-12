@@ -1,6 +1,6 @@
 {
   "name": "@kairo/astrbot-bridge",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.19.0",
@@ -15,7 +15,7 @@
     "check": "pnpm build && pnpm test"
   },
   "dependencies": {
-    "@kairo/driver": "file:vendor/kairo-driver-source",
+    "@kairo/driver": "file:vendor/kairo-driver-15eb384f38c9",
     "ws": "8.19.0"
   },
   "devDependencies": {

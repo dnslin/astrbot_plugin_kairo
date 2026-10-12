@@ -1,4 +1,5 @@
 from collections.abc import AsyncGenerator
+from copy import deepcopy
 from typing import TYPE_CHECKING
 
 from astrbot.api.event import AstrMessageEvent, MessageChain
@@ -24,9 +25,10 @@ class KairoMessageEvent(AstrMessageEvent):
         self.adapter = adapter
         # 上下文会话可能被隔离或被其他插件改写；回复目标始终来自原始消息。
         self.target_session_id = str(message_obj.raw_message["sessionId"])
+        self.sender_id = str(message_obj.sender.user_id)
 
     async def send(self, message: MessageChain) -> None:
-        await self.adapter.send_chain(self.target_session_id, message)
+        await self.adapter.send_chain(self.target_session_id, message, sender_id=self.sender_id)
         await super().send(message)
 
     async def send_streaming(
@@ -37,6 +39,8 @@ class KairoMessageEvent(AstrMessageEvent):
         """KK9 不支持流式发送；误调用时等待生成完毕，再发送完整消息。"""
         result = MessageChain()
         async for chunk in generator:
-            result.chain.extend(chunk.chain)
+            if chunk.type in {"reasoning", "break"}:
+                continue
+            result.chain.extend(deepcopy(chunk.chain))
         if result.chain:
             await self.send(result)

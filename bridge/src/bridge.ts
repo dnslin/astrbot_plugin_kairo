@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import WebSocket from 'ws';
-import type { IKK9Driver, KK9Message, SendOptions, SendResult } from '@kairo/driver';
+import type { IKK9Driver, KK9Message, SendOptions } from '@kairo/driver';
 import type { BridgeConfig } from './config.js';
 import { Attachments, type WireMessage } from './attachments.js';
-import { parseRequest, RequestError, serializeResult, type BridgeRequest, type SendParams } from './protocol.js';
+import { parseRequest, RequestError, serializeError, serializeResult, type BridgeRequest, type BridgeResult } from './protocol.js';
 
 type Log = (level: 'info' | 'warn' | 'error', message: string) => void;
 interface PendingEvent { message: KK9Message; prepared?: WireMessage; socket?: WebSocket }
@@ -41,7 +41,10 @@ export class Bridge {
           this.log('warn', 'Driver 报告失效错误，正在重建连接');
           this.invalidate();
         });
-        driver.on('health', () => this.invalidate());
+        driver.on('health', (event) => {
+          this.log('warn', `Driver 健康状态失效 (${event.kind})，正在重建连接`);
+          this.invalidate();
+        });
         driver.on('status', (status) => { if (this.accepting && status === 'disconnected') this.invalidate(); });
         driver.on('message', (message) => this.enqueue(message));
         try {
@@ -56,7 +59,7 @@ export class Bridge {
             if (!this.invalid && !this.abort.signal.aborted) await this.pause();
           }
         } catch (error) {
-          this.log('warn', error instanceof RequestError ? error.message : 'KK9 连接失败，请检查客户端登录状态和 CDP 配置');
+          this.log('warn', serializeError(error).message);
         } finally {
           this.accepting = false;
           this.ready = false;
@@ -101,7 +104,7 @@ export class Bridge {
   }
 
   private enqueue(message: KK9Message): void {
-    if (!this.accepting || message.direction !== 'inbound') return;
+    if (!this.accepting || message.direction !== 'inbound' || message.isMe || message.isRecalled || message.origin === 'system' || message.messageType === 'system') return;
     if (!message.sessionId || !(message.messageId || message.id)) {
       this.log('error', '收到缺少会话或消息 ID 的入站事件，无法交给 AstrBot');
       return;
@@ -171,7 +174,7 @@ export class Bridge {
       };
       socket.on('open', () => {
         this.lastPong = Date.now();
-        socket.send(JSON.stringify({ type: 'hello', version: 1, self_id: this.config.expectedUserId }));
+        socket.send(JSON.stringify({ type: 'hello', version: 2, self_id: this.config.expectedUserId }));
         readyDeadline = setTimeout(() => socket.terminate(), 10_000);
       });
       socket.on('pong', () => { this.lastPong = Date.now(); });
@@ -182,7 +185,7 @@ export class Bridge {
           value = JSON.parse(data.toString()) as Record<string, unknown>;
           if (!value || typeof value !== 'object') throw new Error('无效消息');
         } catch { socket.close(1008, 'Invalid JSON'); return; }
-        if (value.type === 'ready' && value.version === 1 && !this.ready) {
+        if (value.type === 'ready' && value.version === 2 && !this.ready) {
           clearTimeout(readyDeadline);
           this.ready = true;
           this.log('info', 'AstrBot 桥接已连接，使用完整消息收发');
@@ -199,7 +202,7 @@ export class Bridge {
               const result = await this.execute(request, driver);
               response = { type: 'response', id: request.id, ok: true, result: serializeResult(result) };
             } catch (error) {
-              response = { type: 'response', id: value.id, ok: false, error: { code: error instanceof RequestError ? error.code : 'BRIDGE_ERROR', message: error instanceof RequestError ? error.message : '桥接执行失败，请保留 operation_id 查询状态' } };
+              response = { type: 'response', id: value.id, ok: false, error: serializeError(error) };
             }
             if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(response));
           }).catch(() => this.log('error', '处理桥接请求时发生错误'));
@@ -213,18 +216,44 @@ export class Bridge {
     });
   }
 
-  private async execute(request: BridgeRequest, driver: IKK9Driver): Promise<SendResult> {
+  private async execute(request: BridgeRequest, driver: IKK9Driver): Promise<BridgeResult> {
     await this.verifyIdentity(driver);
-    if (request.action === 'get_send_status') return driver.getSendStatus(request.params.operation_id);
-    const params = request.params as SendParams;
-    const options: SendOptions = { targetSessionId: params.target_session_id, operationId: params.operation_id };
-    if (params.reply_to) options.replyTo = params.reply_to;
-    if (params.mentions?.length) options.mentions = params.mentions.some((item) => item.uid === 'all') ? 'all' : params.mentions;
-    if (params.kind === 'text') return driver.sendText(params.text!, options);
-    const file = await this.attachments.download(params.file_id!, params.kind, params.name);
-    // 下载期间可能切换账号，发送前再次核对。
-    await this.verifyIdentity(driver);
-    if (this.invalid) throw new RequestError('DRIVER_DISCONNECTED', 'KK9 连接已失效');
-    return params.kind === 'image' ? driver.sendImage(file, options) : driver.sendFile(file, options);
+    switch (request.action) {
+      case 'get_send_status': return driver.getSendStatus(request.params.operation_id);
+      case 'get_sessions': return { sessions: await driver.getSessions() };
+      case 'get_user_profile': {
+        const profile = await driver.getUserProfile(request.params.user_id);
+        if (profile === null) return { profile: null };
+        // Driver display fallback substitutes UID when login_name is absent.
+        // It must not decide an exact-employee access rule.
+        const loginName = profile.raw?.login_name;
+        if (typeof loginName !== 'string' || !loginName.trim()) throw new RequestError('IDENTITY_UNAVAILABLE', `原生档案缺少准确 login_name：${request.params.user_id}`);
+        return { profile: { ...profile, loginName: loginName.trim() } };
+      }
+      case 'send_to_user': return driver.sendTextToUser(request.params.login_name, request.params.text, { operationId: request.params.operation_id });
+      case 'send': {
+        const params = request.params;
+        const options: SendOptions = { targetSessionId: params.target_session_id, operationId: params.operation_id };
+        switch (params.kind) {
+          case 'text':
+            if (params.reply_to !== undefined) options.replyTo = params.reply_to;
+            if (params.mentions?.length) options.mentions = params.mentions.length === 1 && params.mentions[0]!.uid === 'all'
+              ? 'all' : params.mentions.map((item) => item.uid === 'all' ? 'all' as const : item);
+            return driver.sendText(params.text, options);
+          case 'app_card': return driver.sendAppMessage(params.card, options);
+          case 'url_card': return driver.sendUrlCard(params.card, options);
+          case 'biz_card': return driver.sendBizMessage(params.card, options);
+          case 'image': case 'file': case 'voice': {
+            const file = await this.attachments.download(params.file_id, params.kind, params.name);
+            // 下载期间可能切换账号，发送前再次核对。
+            await this.verifyIdentity(driver);
+            if (this.invalid) throw new RequestError('DRIVER_DISCONNECTED', 'KK9 连接已失效');
+            if (params.kind === 'image') return driver.sendImage(file, options);
+            if (params.kind === 'voice') return driver.sendVoice({ filePath: file }, options);
+            return driver.sendFile(file, options);
+          }
+        }
+      }
+    }
   }
 }

@@ -73,10 +73,10 @@ export class Attachments {
     } finally { await file.close(); }
   }
 
-  async download(fileId: string, kind: 'image' | 'file', name?: string): Promise<string> {
+  async download(fileId: string, kind: 'image' | 'file' | 'voice', name?: string): Promise<string> {
     if (!/^[a-f0-9]{32}$/.test(fileId)) throw new RequestError('INVALID_REQUEST', 'file_id 无效');
     const directory = join(this.config.dataDir, 'attachments', fileId);
-    const target = join(directory, safeFilename(name ?? (kind === 'image' ? 'image.png' : 'attachment')));
+    const target = join(directory, safeFilename(name ?? (kind === 'image' ? 'image.png' : kind === 'voice' ? 'voice.wav' : 'attachment')));
     const limit = kind === 'image' ? IMAGE_LIMIT : FILE_LIMIT;
     const cached = await stat(target).catch(() => null);
     if (cached?.isFile() && cached.size > 0 && cached.size <= limit) {

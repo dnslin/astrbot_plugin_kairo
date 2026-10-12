@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { SendError } from '@kairo/driver';
 import type { SendOperationStore, SendOperationClaim, SendOperationClaimResult, SendOperationRecord, SendOperationUpdate } from '@kairo/driver';
 
 /** 与 Driver 的内存 Store 保持相同语义；unknown 在重启后仍禁止再次触发发送。 */
@@ -12,21 +13,19 @@ export class SqliteSendOperationStore implements SendOperationStore {
 
   async claim(input: SendOperationClaim): Promise<SendOperationClaimResult> {
     const operationId = input.operationId.trim();
-    if (!operationId) throw new Error('operationId 不能为空');
+    if (!operationId) throw new SendError('operationId 不能为空');
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const row = this.read(operationId);
       if (row) {
         const a = row.fingerprint, b = input.fingerprint;
-        if (a.targetSessionId !== b.targetSessionId || a.messageType !== b.messageType || a.contentDigest !== b.contentDigest) throw new Error('operationId 的 fingerprint 不一致，拒绝复用');
-        if (!(row.status === 'failed' && row.isPreTrigger === true)) {
-          this.db.exec('COMMIT');
-          return { claimed: false, operation: row };
-        }
+        if (a.targetSessionId !== b.targetSessionId || a.targetLoginName !== b.targetLoginName || a.messageType !== b.messageType || a.contentDigest !== b.contentDigest) throw new SendError('operationId 的 fingerprint 不一致，拒绝复用');
+        this.db.exec('COMMIT');
+        return { claimed: false, operation: row };
       }
       const operation: SendOperationRecord = {
         operationId, fingerprint: { ...input.fingerprint }, status: 'unknown',
-        createdAt: row?.createdAt ?? Date.now(), updatedAt: Date.now(),
+        createdAt: Date.now(), updatedAt: Date.now(),
       };
       this.write(operation);
       this.db.exec('COMMIT');
@@ -40,14 +39,25 @@ export class SqliteSendOperationStore implements SendOperationStore {
   async get(operationId: string): Promise<SendOperationRecord | null> { return this.read(operationId.trim()); }
 
   async update(operationId: string, update: SendOperationUpdate): Promise<SendOperationRecord> {
-    const existing = this.read(operationId.trim());
-    if (!existing) throw new Error('未找到发送操作');
-    const result: SendOperationRecord = {
-      operationId: existing.operationId, fingerprint: existing.fingerprint,
-      createdAt: existing.createdAt, updatedAt: Date.now(), ...update,
-    };
-    this.write(result);
-    return result;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const existing = this.read(operationId.trim());
+      if (!existing) throw new SendError('未找到发送操作');
+      if (existing.status !== 'unknown' && update.status === 'unknown') {
+        this.db.exec('COMMIT');
+        return existing;
+      }
+      const result: SendOperationRecord = {
+        operationId: existing.operationId, fingerprint: existing.fingerprint,
+        createdAt: existing.createdAt, updatedAt: Date.now(), ...update,
+      };
+      this.write(result);
+      this.db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   close(): void { this.db.close(); }

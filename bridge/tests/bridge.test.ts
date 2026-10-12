@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -9,7 +10,7 @@ import { FakeKK9Driver, type KK9Message, InMemorySendOperationStore } from '@kai
 import { Bridge } from '../src/bridge.js';
 import { parseConfig } from '../src/config.js';
 
-const message: KK9Message = { id: 'm1', messageId: 'm1', sessionId: '1-8', sessionName: '测试群', sessionType: 'group', direction: 'inbound', sender: '测试员工', senderId: '2', content: 'hello', time: '', isMe: false, timestamp: 1 };
+const message: KK9Message = { id: '101', messageId: '101', msgIdx: 1, sessionId: '8', sessionName: '测试群', sessionType: 'group', direction: 'inbound', sender: '测试员工', senderId: '2', content: 'hello', time: '', isMe: false, timestamp: 1 };
 async function until(check: () => boolean): Promise<void> {
   const start = Date.now();
   while (!check()) {
@@ -28,6 +29,7 @@ test('只提交入站、忽略 at 快捷事件、重连重放未 ACK 事件，�
   const store = new InMemorySendOperationStore();
   const driver = new FakeKK9Driver(store);
   driver.setCurrentUserId('1');
+  driver.setMessages([message]);
   const received: Record<string, any>[] = [];
   const peers: WebSocket[] = [];
   server.on('connection', (socket, request) => {
@@ -36,7 +38,10 @@ test('只提交入站、忽略 at 快捷事件、重连重放未 ACK 事件，�
     socket.on('message', (bytes) => {
       const value = JSON.parse(bytes.toString());
       received.push(value);
-      if (value.type === 'hello') socket.send(JSON.stringify({ type: 'ready', version: 1 }));
+      if (value.type === 'hello') {
+        assert.equal(value.version, 2);
+        socket.send(JSON.stringify({ type: 'ready', version: 2 }));
+      }
     });
   });
   let readyCount = 0;
@@ -45,6 +50,10 @@ test('只提交入站、忽略 at 快捷事件、重连重放未 ACK 事件，�
   try {
     await until(() => readyCount === 1);
     driver.emit('message', { ...message, id: 'out', direction: 'outbound' });
+    driver.emit('message', { ...message, id: 'self', isMe: true });
+    driver.emit('message', { ...message, id: 'recalled', isRecalled: true });
+    driver.emit('message', { ...message, id: 'system', origin: 'system' });
+    driver.emit('message', { ...message, id: 'system-type', messageType: 'system' });
     driver.emit('at', message);
     driver.emit('message', message);
     await until(() => received.some((item) => item.type === 'event'));
@@ -55,12 +64,12 @@ test('只提交入站、忽略 at 快捷事件、重连重放未 ACK 事件，�
     assert.equal(received.filter((item) => item.type === 'event')[1]!.event_id, first.event_id);
     const peer = peers[1]!;
     peer.send(JSON.stringify({ type: 'ack', event_id: first.event_id }));
-    const params = { operation_id: 'send-1', target_session_id: '1-8', kind: 'text', text: 'reply', mentions: [{ uid: 'all', name: '所有人' }], reply_to: 'm1' };
+    const params = { operation_id: 'send-1', target_session_id: '8', kind: 'text', text: 'reply', mentions: [{ uid: 'all', name: '所有人' }], reply_to: '101' };
     driver.setSendBehavior({ mode: 'post_trigger_timeout' });
     peer.send(JSON.stringify({ type: 'request', id: 'r1', action: 'send', params }));
     await until(() => received.some((item) => item.id === 'r1'));
     assert.equal(received.find((item) => item.id === 'r1')!.result.status, 'unknown');
-    assert.equal(driver.recordedCalls[0]?.options?.targetSessionId, '1-8');
+    assert.equal(driver.recordedCalls[0]?.options?.targetSessionId, '8');
     assert.equal((driver.recordedCalls[0]?.options as any).mentions, 'all');
     peer.send(JSON.stringify({ type: 'request', id: 'r2', action: 'send', params }));
     await until(() => received.some((item) => item.id === 'r2'));
@@ -110,7 +119,7 @@ test('CDP health 失效后清理旧 Driver 并创建新实例', async () => {
   const drivers: FakeKK9Driver[] = [];
   let disconnects = 0, ready = 0;
   server.on('connection', (socket) => socket.on('message', (raw) => {
-    if (JSON.parse(raw.toString()).type === 'hello') socket.send(JSON.stringify({ type: 'ready', version: 1 }));
+    if (JSON.parse(raw.toString()).type === 'hello') socket.send(JSON.stringify({ type: 'ready', version: 2 }));
   }));
   const bridge = new Bridge(config, () => {
     const driver = new FakeKK9Driver();
@@ -135,6 +144,128 @@ test('CDP health 失效后清理旧 Driver 并创建新实例', async () => {
     bridge.stop(); await running;
     for (const socket of server.clients) socket.terminate();
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('RPC公开查询、三类卡片、图片文件语音和首次工号通知经过真实分派与附件下载', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'kairo-native-rpc-'));
+  const fileId = 'a'.repeat(32);
+  const wav = Buffer.alloc(48);
+  wav.write('RIFF'); wav.writeUInt32LE(40, 4); wav.write('WAVEfmt ', 8);
+  wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(8000, 24); wav.writeUInt32LE(16000, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34);
+  wav.write('data', 36); wav.writeUInt32LE(4, 40);
+  const http = createServer((request, response) => {
+    assert.equal(request.url, `/files/${fileId}`);
+    assert.equal(request.headers.authorization, `Bearer ${'x'.repeat(32)}`);
+    response.end(wav);
+  });
+  const server = new WebSocketServer({ server: http });
+  await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve));
+  const address = http.address();
+  assert.ok(address && typeof address !== 'string');
+  const config = parseConfig({ serverUrl: `http://127.0.0.1:${address.port}`, token: 'x'.repeat(32), expectedUserId: '1', reconnectDelayMs: 100 }, root);
+  const driver = new FakeKK9Driver();
+  driver.setCurrentUserId('1');
+  const sessions = [{ id: '8', name: '测试群', type: 'group' as const, nativeType: 1, receiverId: '88', unread: false }];
+  const employee = { id: '2', loginName: 'AbC', name: '测试员工', updatedAt: 1, raw: { id: '2', login_name: 'AbC' } };
+  driver.setSessions(sessions);
+  driver.setEmployees([employee]);
+  const responses = new Map<string, any>();
+  let peer: WebSocket | undefined, ready = false;
+  server.on('connection', (socket) => {
+    peer = socket;
+    socket.on('message', (raw) => {
+      const value = JSON.parse(raw.toString());
+      if (value.type === 'hello') {
+        assert.equal(value.version, 2);
+        socket.send(JSON.stringify({ type: 'ready', version: 2 }));
+      } else if (value.type === 'response') responses.set(value.id, value);
+    });
+  });
+  const bridge = new Bridge(config, () => driver, (_level, text) => { if (text.startsWith('AstrBot 桥接已连接')) ready = true; });
+  const running = bridge.run();
+  let counter = 0;
+  const rpc = async (action: string, params: Record<string, unknown>) => {
+    const id = `rpc-${++counter}`;
+    peer!.send(JSON.stringify({ type: 'request', id, action, params }));
+    await until(() => responses.has(id));
+    return responses.get(id);
+  };
+  try {
+    await until(() => ready);
+    assert.deepEqual((await rpc('get_sessions', {})).result, { sessions });
+    assert.deepEqual((await rpc('get_user_profile', { user_id: '2' })).result, { profile: employee });
+    assert.deepEqual((await rpc('get_user_profile', { user_id: '999' })).result, { profile: null });
+    driver.setEmployees([{ id: '3', loginName: '3', name: '缺少工号', updatedAt: 1, raw: { id: '3' } }]);
+    const missingLogin = await rpc('get_user_profile', { user_id: '3' });
+    assert.equal(missingLogin.ok, false);
+    assert.equal(missingLogin.error.code, 'IDENTITY_UNAVAILABLE');
+    driver.setEmployees([{ id: '3', loginName: '3', name: '数字工号', updatedAt: 1, raw: { id: '3', login_name: '3' } }]);
+    assert.equal((await rpc('get_user_profile', { user_id: '3' })).result.profile.loginName, '3');
+    driver.setEmployees([employee]);
+    assert.equal(driver.recordedCalls.length, 0);
+    assert.equal((await rpc('send', { operation_id: 'mixed-mentions', target_session_id: '8', kind: 'text', text: '群通知', mentions: [{ uid: 'all', name: '全体成员' }, { uid: '2', name: '测试员工' }] })).result.status, 'sent');
+    assert.deepEqual(driver.recordedCalls.at(-1)!.options, { targetSessionId: '8', operationId: 'mixed-mentions', mentions: ['all', { uid: '2', name: '测试员工' }] });
+    const cards = [
+      { kind: 'app_card', card: { title: '通知', content: '<p>正文</p>' }, call: 'appMessage' },
+      { kind: 'url_card', card: { title: '链接', summary: '摘要', linkUrl: 'https://example.com' }, call: 'urlCard' },
+      { kind: 'biz_card', card: { title: '业务', content: '正文', bizType: 2, bizUrl: '/', summary: ['一'] }, call: 'bizMessage' },
+    ];
+    for (const [index, item] of cards.entries()) {
+      const response = await rpc('send', { operation_id: `card-${index}`, target_session_id: '8', kind: item.kind, card: item.card });
+      assert.equal(response.result.status, 'sent');
+      assert.equal('success' in response.result, false);
+      assert.equal('recall' in response.result, false);
+      assert.equal(driver.recordedCalls.at(-1)!.type, item.call);
+      assert.deepEqual(driver.recordedCalls.at(-1)!.payload, item.card);
+      assert.equal(driver.recordedCalls.at(-1)!.options!.targetSessionId, '8');
+    }
+    for (const kind of ['image', 'file', 'voice']) {
+      const response = await rpc('send', { operation_id: `media-${kind}`, target_session_id: '8', kind, file_id: fileId, name: 'audio.wav' });
+      assert.equal(response.result.status, 'sent');
+      const call = driver.recordedCalls.at(-1)!;
+      assert.equal(call.type, kind);
+      let path: string;
+      if (kind === 'voice') {
+        assert.ok(typeof call.payload === 'object' && 'filePath' in call.payload);
+        assert.equal(typeof call.payload.filePath, 'string');
+        path = call.payload.filePath!;
+      } else {
+        assert.equal(typeof call.payload, 'string');
+        assert.ok(typeof call.payload === 'string');
+        path = call.payload;
+      }
+      assert.deepEqual(await readFile(path), wav);
+      if (kind === 'voice') assert.deepEqual(call.payload, { filePath: path });
+    }
+    const notify = await rpc('send_to_user', { operation_id: 'notify', login_name: ' AbC ', text: '首次通知' });
+    assert.equal(notify.result.status, 'sent');
+    assert.match(notify.result.sessionId, /^[1-9]\d*$/);
+    assert.equal(driver.recordedCalls.at(-1)!.type, 'textToUser');
+    assert.equal(driver.recordedCalls.at(-1)!.targetLoginName, 'AbC');
+    const count = driver.recordedCalls.length;
+    assert.deepEqual((await rpc('send_to_user', { operation_id: 'notify', login_name: 'AbC', text: '首次通知' })).result, notify.result);
+    assert.equal(driver.recordedCalls.length, count);
+    assert.deepEqual((await rpc('get_send_status', { operation_id: 'notify' })).result, notify.result);
+    const mismatch = await rpc('send_to_user', { operation_id: 'notify', login_name: 'abc', text: '首次通知' });
+    assert.equal(mismatch.ok, false);
+    assert.equal(mismatch.error.code, 'SEND_ERROR');
+    assert.match(mismatch.error.message, /fingerprint/);
+    assert.equal(driver.recordedCalls.length, count);
+    const missing = await rpc('send_to_user', { operation_id: 'missing', login_name: 'abc', text: '不改投' });
+    assert.equal(missing.result.status, 'failed');
+    assert.match(missing.result.error, /未找到准确工号/);
+    driver.getUserProfile = async () => { throw Object.assign(new Error('原生档案查询失败 (403)'), { code: 'NATIVE_PROFILE_FAILED' }); };
+    assert.deepEqual((await rpc('get_user_profile', { user_id: '2' })).error, { code: 'NATIVE_PROFILE_FAILED', message: '原生档案查询失败 (403)' });
+    driver.getSessions = async () => { throw new Error('原生会话查询断线'); };
+    assert.deepEqual((await rpc('get_sessions', {})).error, { code: 'BRIDGE_ERROR', message: '原生会话查询断线' });
+  } finally {
+    bridge.stop(); await running;
+    for (const socket of server.clients) socket.terminate();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await new Promise<void>((resolve) => http.close(() => resolve()));
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -2,6 +2,8 @@
 
 import base64
 import json
+import logging
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -9,21 +11,32 @@ from pathlib import Path
 from astrbot.api.message_components import At, AtAll, File, Image, Plain, Reply
 from astrbot.api.platform import AstrBotMessage, Group, MessageMember, MessageType
 
+from .transport import BridgeError
+
 _GROUP_SESSION_PREFIX = "kairo:g:"
+_NATIVE_SESSION_ID = re.compile(r"[1-9][0-9]*")
+logger = logging.getLogger(__name__)
 
 
 def encode_group_session(group_id: str, sender_id: str) -> str:
     """上下文按群成员隔离，编码中保留主动发送所需的真实群 ID。"""
+    if not isinstance(group_id, str) or not _NATIVE_SESSION_ID.fullmatch(group_id):
+        raise ValueError("KK9 原生会话 ID 必须为正整数字符串")
+    if not isinstance(sender_id, str) or not sender_id:
+        raise ValueError("KK9 群成员 UID 不能为空")
     payload = json.dumps([group_id, sender_id], ensure_ascii=False, separators=(",", ":"))
     encoded = base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
     return _GROUP_SESSION_PREFIX + encoded
 
 
-def target_from_session(session_id: str) -> str:
-    if not isinstance(session_id, str) or not session_id.strip():
+def decode_session(session_id: str) -> tuple[str, str | None]:
+    """还原原生目标及可选的群成员身份，不接受旧界面路由。"""
+    if not isinstance(session_id, str) or not session_id:
         raise ValueError("KK9 目标会话 ID 不能为空")
     if not session_id.startswith(_GROUP_SESSION_PREFIX):
-        return session_id
+        if not _NATIVE_SESSION_ID.fullmatch(session_id):
+            raise ValueError("KK9 原生会话 ID 必须为正整数字符串")
+        return session_id, None
     encoded = session_id[len(_GROUP_SESSION_PREFIX) :]
     try:
         decoded = base64.b64decode(
@@ -34,9 +47,10 @@ def target_from_session(session_id: str) -> str:
             isinstance(value, list)
             and len(value) == 2
             and all(isinstance(item, str) and item for item in value)
+            and _NATIVE_SESSION_ID.fullmatch(value[0])
         ):
             raise ValueError
-        return value[0]
+        return value[0], value[1]
     except (ValueError, UnicodeError, TypeError) as exc:
         raise ValueError("无效的 Kairo 群成员会话 ID") from exc
 
@@ -53,12 +67,15 @@ def convert_message(
         data.get("direction") != "inbound"
         or data.get("isMe")
         or data.get("isRecalled")
-        or data.get("origin") in {"system", "bot_echo", "operator"}
+        or data.get("origin") == "system"
         or data.get("messageType") == "system"
     ):
         return None
 
-    session_id = str(data.get("sessionId") or "")
+    session_id = data.get("sessionId")
+    if not isinstance(session_id, str) or not _NATIVE_SESSION_ID.fullmatch(session_id):
+        logger.warning("忽略无效的 KK9 原生会话 ID：%r；不按发送者猜测目标", session_id)
+        return None
     sender_id = str(data.get("senderId") or "")
     message_id = str(data.get("messageId") or data.get("id") or "")
     session_type = data.get("sessionType")
@@ -72,9 +89,6 @@ def convert_message(
         return None
 
     is_group = session_type == "group"
-    if not is_group and (session_id in {f"0-{self_id}", self_id} or not session_id):
-        session_id = f"0-{sender_id}"
-        data["sessionId"] = session_id
 
     message = AstrBotMessage()
     message.type = MessageType.GROUP_MESSAGE if is_group else MessageType.FRIEND_MESSAGE
@@ -102,6 +116,8 @@ def convert_message(
         components.append(
             Reply(
                 id=str(reply["replyToId"]),
+                sender_id=str(reply.get("replyToSenderId") or ""),
+                seq=reply.get("replyToMsgIdx"),
                 sender_nickname=str(reply.get("replyToSender") or ""),
                 message_str=reply_text,
                 chain=[Plain(reply_text)] if reply_text else [],
@@ -114,8 +130,8 @@ def convert_message(
         ids = list(dict.fromkeys(str(uid) for uid in mentioned if uid))
         if (data.get("atMe") or mention_info.get("isAtMe")) and self_id not in ids:
             ids.append(self_id)
-        components.extend(At(qq=uid) for uid in ids if uid != "all")
-        if data.get("atAll") or mention_info.get("isAtAll") or "all" in ids:
+        components.extend(At(qq=uid) for uid in ids if uid not in {"all", "-1"})
+        if data.get("atAll") or mention_info.get("isAtAll") or {"all", "-1"}.intersection(ids):
             components.append(AtAll())
 
     content = str(data.get("content") or "")
@@ -123,45 +139,49 @@ def convert_message(
         components.append(Plain(content))
     text_parts = [content] if content else []
 
-    def attachment_path(info: dict) -> Path | None:
+    def attachment_path(info: dict) -> tuple[Path | None, str]:
         file_id = info.get("file_id")
         if not isinstance(file_id, str):
-            return None
+            reason = info.get("attachment_error") or "附件未上传或尚未在 KK9 缓存"
+            return None, str(reason)
         try:
-            return get_file_path(file_id)
-        except Exception:
-            # 已清理或传输失败的附件不能伪装为可读取的图片/文件。
-            return None
+            return get_file_path(file_id), ""
+        except BridgeError as exc:
+            return None, exc.message
+        except OSError as exc:
+            return None, str(exc) or type(exc).__name__
 
     images = data.get("images") or []
     for info in images:
-        path = attachment_path(info)
+        path, error = attachment_path(info)
         if path is not None:
             components.append(Image.fromFileSystem(str(path)))
             text_parts.append("[图片]")
         else:
-            notice = "[图片内容尚未取得，请在 KK9 中下载后重新发送]"
+            notice = f"[图片内容尚未取得：{error}]"
             components.append(Plain(notice))
             text_parts.append(notice)
 
     file_info = data.get("fileInfo")
     if isinstance(file_info, dict):
         name = str(file_info.get("fileName") or file_info.get("name") or "附件")
-        path = attachment_path(file_info)
+        path, error = attachment_path(file_info)
         if path is not None:
             components.append(File(name=name, file=str(path)))
             text_parts.append(f"[文件：{name}]")
         else:
-            notice = f"[文件“{name}”的内容尚未取得，请在 KK9 中下载后重新发送]"
+            notice = f"[文件“{name}”的内容尚未取得：{error}]"
             components.append(Plain(notice))
             text_parts.append(notice)
 
     if data.get("messageType") == "image" and not images:
-        notice = "[图片内容尚未取得，请在 KK9 中下载后重新发送]"
+        reason = data.get("attachment_error") or "附件未上传或尚未在 KK9 缓存"
+        notice = f"[图片内容尚未取得：{reason}]"
         components.append(Plain(notice))
         text_parts.append(notice)
     elif data.get("messageType") == "file" and not file_info:
-        notice = "[文件内容尚未取得，请在 KK9 中下载后重新发送]"
+        reason = data.get("attachment_error") or "附件未上传或尚未在 KK9 缓存"
+        notice = f"[文件内容尚未取得：{reason}]"
         components.append(Plain(notice))
         text_parts.append(notice)
     elif data.get("messageType") == "voice":

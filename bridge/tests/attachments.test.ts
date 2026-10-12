@@ -38,7 +38,7 @@ test('附件必须位于真实白名单目录内，不能通过符号链接越�
 test('未缓存附件保留说明并移除本地路径、URL和 raw，不阻断文本', async () => {
   const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1' }, '/tmp');
   const files = new Attachments(config);
-  const result = await files.normalize({ id: 'm1', sessionId: '0-2', sessionName: '', sessionType: 'private', direction: 'inbound', sender: '员工', senderId: '2', content: '请看附件', time: '', isMe: false, timestamp: 1, raw: { private: true }, images: [{ url: 'https://private/image', uri: 'private-uri' }], fileInfo: { fileName: 'doc.pdf' } } as KK9Message);
+  const result = await files.normalize({ id: '101', sessionId: '2', sessionName: '', sessionType: 'private', direction: 'inbound', sender: '员工', senderId: '2', content: '请看附件', time: '', isMe: false, timestamp: 1, raw: { private: true }, images: [{ url: 'https://private/image', uri: 'private-uri' }], fileInfo: { fileName: 'doc.pdf' } } as KK9Message);
   assert.equal(result.content, '请看附件');
   assert.equal(result.raw, undefined);
   const picture = (result.images as Record<string, unknown>[])[0]!;
@@ -57,5 +57,45 @@ test('下载附件只请求固定服务的 file_id 并使用安全且稳定的�
     assert.equal(await files.download('b'.repeat(32), 'file', '../../document.txt'), target);
     assert.deepEqual(urls, [`http://127.0.0.1:6190/files/${'b'.repeat(32)}`]);
     assert.equal(safeFilename('C:\\secret\\CON.txt'), '_CON.txt');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('已缓存图片与文件上传实际字节，缓存外路径保留具体失败原因', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'kairo-cached-inbound-'));
+  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1', attachmentRoots: ['./cache'] }, root);
+  const uploads: Buffer[] = [];
+  const files = new Attachments(config, (async (_url, init) => {
+    assert.ok(init?.body instanceof Uint8Array);
+    uploads.push(Buffer.from(init.body));
+    return Response.json({ file_id: 'c'.repeat(32) });
+  }) as typeof fetch);
+  try {
+    await mkdir(join(root, 'cache'));
+    await writeFile(join(root, 'cache', 'picture.png'), Buffer.from([137, 80, 78, 71]));
+    await writeFile(join(root, 'cache', 'document.txt'), '真实附件');
+    await writeFile(join(root, 'outside.txt'), '不得读取');
+    const input: KK9Message = { id: '101', sessionId: '2', sessionName: '', sessionType: 'private', direction: 'inbound', sender: '员工', senderId: '2', content: '附件正文', time: '', isMe: false, timestamp: 1, images: [{ filePath: join(root, 'cache', 'picture.png'), width: 2 }], fileInfo: { fileName: 'document.txt', filePath: join(root, 'cache', 'document.txt') } };
+    const normalized = await files.normalize(input);
+    assert.deepEqual(uploads, [Buffer.from([137, 80, 78, 71]), Buffer.from('真实附件')]);
+    assert.deepEqual(normalized.images, [{ width: 2, file_id: 'c'.repeat(32), name: 'picture.png', size: 4 }]);
+    assert.deepEqual(normalized.fileInfo, { fileName: 'document.txt', file_id: 'c'.repeat(32), name: 'document.txt', size: Buffer.byteLength('真实附件') });
+    const denied = await files.normalize({ ...input, images: [], fileInfo: { fileName: 'outside.txt', filePath: join(root, 'outside.txt') } });
+    assert.ok(denied.fileInfo && typeof denied.fileInfo === 'object' && 'attachment_error' in denied.fileInfo);
+    assert.match(String(denied.fileInfo.attachment_error), /attachmentRoots/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('voice下载持有真实音频文件并使用100MiB通道而非图片限制', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'kairo-voice-download-'));
+  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1' }, root);
+  const audio = Buffer.alloc(21 * 1024 * 1024);
+  audio.write('RIFF'); audio.write('WAVE', 8);
+  const files = new Attachments(config, (async () => new Response(audio, { headers: { 'content-length': String(audio.length) } })) as typeof fetch);
+  try {
+    const target = await files.download('d'.repeat(32), 'voice', 'speech.wav');
+    assert.deepEqual(await readFile(target), audio);
+    await assert.rejects(files.download('e'.repeat(32), 'image', 'speech.wav'), /大小限制/);
+    const oversized = new Attachments(config, (async () => new Response('audio', { headers: { 'content-length': String(100 * 1024 * 1024 + 1) } })) as typeof fetch);
+    await assert.rejects(oversized.download('f'.repeat(32), 'voice', 'speech.mp3'), /大小限制/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

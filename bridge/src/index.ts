@@ -15,8 +15,8 @@ async function main(): Promise<void> {
   const config = await loadConfig(args[1] ?? 'config.json');
   await mkdir(config.dataDir, { recursive: true, mode: 0o700 });
   const store = new SqliteSendOperationStore(join(config.dataDir, 'send-operations.sqlite'));
-  // Driver 日志可能包含内部消息字段；桥接只输出自身的连接/错误状态。
-  setDriverLogSink(() => {});
+  // 新 Driver 的结构化日志只含状态与标识；保留关键诊断，不打印聊天正文。
+  setDriverLogSink((entry) => log(entry.level, JSON.stringify(entry)));
   const bridge = new Bridge(config, () => new KK9Driver({ cdp: config.cdp, rejectExistingBridge: true }, store), log);
   process.once('SIGINT', () => bridge.stop());
   process.once('SIGTERM', () => bridge.stop());

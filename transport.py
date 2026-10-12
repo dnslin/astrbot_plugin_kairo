@@ -27,10 +27,11 @@ FILE_ID = re.compile(r"^[a-f0-9]{32}$")
 
 
 class BridgeError(Exception):
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, *, result: dict | None = None):
         super().__init__(message)
         self.code = code
         self.message = message
+        self.result = result
 
 
 class BridgeServer:
@@ -152,14 +153,14 @@ class BridgeServer:
             if (
                 not isinstance(hello, dict)
                 or hello.get("type") != "hello"
-                or hello.get("version") != 1
+                or hello.get("version") != 2
                 or hello.get("self_id") != self.expected_self_id
             ):
                 logger.warning("拒绝协议版本或机器人 UID 不匹配的桥接连接")
                 await ws.close(code=1008, message=b"version or identity mismatch")
                 return ws
             self.connected = True
-            await ws.send_json({"type": "ready", "version": 1})
+            await ws.send_json({"type": "ready", "version": 2})
             self._notify_status(True)
             async for frame in ws:
                 if frame.type != WSMsgType.TEXT:
@@ -248,7 +249,13 @@ class BridgeServer:
                 self._events.task_done()
 
     async def request(self, action: str, params: dict) -> dict:
-        if action not in {"send", "get_send_status"}:
+        if action not in {
+            "send",
+            "send_to_user",
+            "get_send_status",
+            "get_sessions",
+            "get_user_profile",
+        }:
             raise BridgeError("INVALID_ACTION", "不支持的桥接操作")
         ws = self._ws
         if not self.connected or ws is None or ws.closed:
@@ -275,7 +282,7 @@ class BridgeServer:
 
     async def _health(self, request: web.Request) -> web.Response:
         self._authorize(request)
-        return web.json_response({"version": 1, "connected": self.connected})
+        return web.json_response({"version": 2, "connected": self.connected})
 
     def get_file_path(self, file_id: str) -> Path:
         if not isinstance(file_id, str) or not FILE_ID.fullmatch(file_id):

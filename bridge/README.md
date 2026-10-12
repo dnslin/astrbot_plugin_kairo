@@ -76,36 +76,36 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 
 这里应填写真实缓存目录，不要使用整个用户目录或磁盘根目录。未缓存的图片/文件会带不可读取说明转交 AstrBot，其他文字正常处理。当前 Driver 没有公开远程附件下载接口，因此桥接不会主动下载未缓存的 KK9 附件。
 
-AstrBot 发来的附件按 `file_id` 从配置好的服务下载到 `dataDir`，然后交给 Driver。图片限制 20 MiB，普通文件限制 100 MiB。文本支持 `@` 和引用回复；当前 Driver 的图片和文件发送不能附带引用或提及。
+AstrBot 发来的附件按 `file_id` 从配置好的服务下载到 `dataDir`，然后交给 Driver。图片限制 20 MiB，普通文件和语音通道限制 100 MiB。语音通过 `sendVoice({filePath})` 发送有效 WAV/MP3，不新增文字转语音服务。文本支持 `@` 和引用；图片、文件、语音及三类卡片不支持附带原生引用或提及。
 
 ## 连接与发送记录
 
 - 每次连接和发送前核对实际登录 UID，账号不符时停止该连接的收发。
 - WebSocket 断线后重连并重放当前进程内未收到 ACK 的入站消息。Driver 失效时先清理旧实例，再新建实例。
 - 只消费 `message` 事件中的 `inbound` 消息，避免自身回显和 `at` 快捷事件造成重复。
-- `dataDir/send-operations.sqlite` 持久保存 `operation_id`、内容摘要和发送结果。状态为 `unknown` 表示无法确认是否送达，不能换新 ID 直接重发。
+- `dataDir/send-operations.sqlite` 持久保存 `operation_id`、目标工号、内容摘要和发送结果。`sent` 是原生发送确认，不是已读或送达证明；`failed` 保留原因；`unknown` 表示结果不确定，只查询同一个 ID，不自动重发。同一 ID 的前置失败也不会重新提交，迟到的 unknown 不覆盖已确认终态。
 - 入站未确认队列保存在内存中，进程退出会丢失；连接中断期间 KK9 未发出的历史事件也不自动补偿。队列满时程序报错停止，需要人工检查未处理消息。
 - 附件文件定期过期清理；发送操作记录保留用于防重，不要在有未确认发送时删除数据库。
 
 ## 依赖与验证
 
-Driver 固定到 `dnslin/kairo-driver` 提交 `b23829d6e65ddd99ab9ab019395ddba205b12b4a`。准备脚本在忽略的 `vendor/kairo-driver-source` 目录中检出源码，应用 `patches/driver-native-send.patch`，再按上游锁文件安装并构建 `dist`。该补丁修复两处发送错误：按 KK9 原生约定使用 `sesTypeID` 作为收件人；所有消息类型的关联标记都避开会被原生历史查询过滤的 `C/c`。补丁包含回归测试；重复准备时会先撤下同一补丁，其他源码修改仍会阻止覆盖。
+Driver 固定到 `dnslin/kairo-driver` 提交 `15eb384f38c96fbfa9f5f6064713d5740f4bc45f`。新旧 Driver 的包版本同为 2.0.0，不能凭包版本判断接口。准备脚本在 `vendor/kairo-driver-15eb384f38c9` 检出固定源码并构建，通过同名 `file:` 目录依赖消费；不再应用旧 `driver-native-send.patch`，仅保留上游两份音频依赖补丁。
 
-发送确认按最近 20 条读取；发送状态回查分 20 条一页、最多 5 页，保留最近 100 条的范围，并从实际最新记录开始，不使用可能滞后的会话缓存序号作为上限。部分会话一次读取 50/100 条会返回 KK9 的 `Internal Server Error`，即使新消息已落库，也会造成旧版错误报告 `unknown`。此修复位于独立 Node.js 桥接端，重载 AstrBot 插件不能替代重启桥接。
+准备脚本使用独立临时检出目录，检出完成才放入最终目录；中断遗留的临时目录不阻止下次准备。已有最终目录若提交不符或跟踪文件被修改，报告路径和原因，不 reset 或覆盖使用者修改。可用 `KAIRO_DRIVER_SOURCE` 指定源码仓库来源，固定提交要求不变。
 
-桥接使用 `file:vendor/kairo-driver-source` 本地目录依赖。更新已有安装时，先停止桥接，再执行以下命令以重新打包本地 Driver，最后启动桥接；无需删除发送数据库，也不会自动重发旧的 `unknown` 操作：
+本版使用协议 v2；Python 插件与桥接必须一起更新，旧协议、旧界面会话 ID 和旧数据不提供兼容或迁移。停止已有桥接，更新源码后执行：
 
 ```powershell
 node scripts/prepare-driver.mjs
-pnpm install --force --frozen-lockfile
+pnpm install --frozen-lockfile
 pnpm build
 pnpm start
 ```
 
-首次安装和 CI 仍须先运行准备脚本，再执行冻结安装。消费项目同时保留上游两份依赖补丁。
+同时重启 AstrBot。无需删除现存运行目录或发送数据库；不会自动重发历史未知操作。首次安装及 CI 也必须先准备 Driver，再冻结安装。
 
 ```powershell
 pnpm check
 ```
 
-自动检查覆盖消息协议、方向筛选、ACK 重发、发送防重、账号校验和附件路径限制。真实 KK9 收发、UI 状态、缓存格式与 CDP 恢复仍需要在 Windows 上联调。
+自动检查覆盖协议 v2、原生会话路由、三类卡片和媒体分派、工号首次通知、方向筛选、ACK 重放、发送防重、账号校验和附件路径限制。已完成实际 WebSocket/HTTP 双进程离线 smoke；真实 KK9 收发、语音编码及播放、卡片呈现、缓存格式与 CDP 恢复仍需手动验收，步骤见[主说明](../README.md#5-手动验收)。
