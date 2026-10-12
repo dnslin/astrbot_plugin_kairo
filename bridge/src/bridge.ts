@@ -129,7 +129,7 @@ export class Bridge {
         if (!this.ready || this.socket !== socket || this.invalid || socket.readyState !== WebSocket.OPEN) return;
         if (item.socket === socket) continue;
         await this.verifyIdentity(driver);
-        item.prepared ??= await this.attachments.normalize(item.message);
+        item.prepared ??= await this.attachments.normalize(item.message, driver);
         if (!this.ready || this.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
         const payload = JSON.stringify({ type: 'event', event_id: id, message: item.prepared });
         if (Buffer.byteLength(payload) > 1024 * 1024) {

@@ -511,3 +511,93 @@ async def test_entire_card_is_validated_before_preceding_text_is_submitted(conne
         )
     assert error.value.code == "INVALID_CARD"
     assert await command("calls") == []
+
+
+async def test_uri_only_cached_image_reaches_astrbot_with_original_bytes(connection):
+    adapter, command, cache, _ = connection
+    (cache / "resource.png").write_bytes(PNG)
+    await command(
+        "emit",
+        message=incoming(
+            "uri-cached-image",
+            sessionId="716791",
+            sessionType="private",
+            content="这张图片内容是什么",
+            images=[{"uri": "groupc7/M00/7B/6A/resource", "mimeType": "image/png"}],
+        ),
+    )
+    event = await asyncio.wait_for(adapter._event_queue.get(), 10)
+    image = next(component for component in event.get_messages() if isinstance(component, Image))
+    assert Path(await image.convert_to_file_path()).read_bytes() == PNG
+
+
+@pytest.mark.parametrize("stale_path", [False, True])
+async def test_native_original_download_reaches_astrbot_not_thumbnail(connection, stale_path):
+    adapter, command, cache, _ = connection
+    thumbnail = cache / "thumbnail.png"
+    thumbnail.write_bytes(b"thumbnail-not-the-original")
+    await command(
+        "image_resource", uri="server/original", bytes_base64=base64.b64encode(PNG).decode()
+    )
+    image_info = {
+        "filePath": str(thumbnail),
+        "uri": "server/thumbnail",
+        "originalUri": "server/original",
+        "mimeType": "image/png",
+    }
+    if stale_path:
+        image_info["originalFilePath"] = str(cache / "expired-original.png")
+    await command(
+        "emit",
+        message=incoming("native-original", content="原图正文", images=[image_info]),
+    )
+    event = await receive(adapter)
+    image = next(component for component in event.get_messages() if isinstance(component, Image))
+    assert Path(await image.convert_to_file_path()).read_bytes() == PNG
+    assert "原图正文" in event.message_obj.message_str
+    cached = list((cache.parent / "bridge" / "attachments").glob("*/*"))
+    assert len(cached) == 1
+    assert cached[0].read_bytes() == PNG
+    assert len(cached[0].parent.name) == 32
+    assert await command("calls") == []
+
+
+async def test_native_original_download_failure_keeps_text_without_thumbnail(connection):
+    adapter, command, cache, _ = connection
+    thumbnail = cache / "thumbnail.png"
+    thumbnail.write_bytes(PNG)
+    await command(
+        "emit",
+        message=incoming(
+            "native-original-failure",
+            content="下载失败也保留正文",
+            images=[
+                {
+                    "filePath": str(thumbnail),
+                    "uri": "server/thumbnail",
+                    "originalUri": "server/not-injected",
+                }
+            ],
+        ),
+    )
+    event = await receive(adapter)
+    assert not any(isinstance(component, Image) for component in event.get_messages())
+    assert "下载失败也保留正文" in event.message_obj.message_str
+    assert "not-injected" in str(event.message_obj.raw_message)
+    assert "attachment_error" in str(event.message_obj.raw_message)
+    assert await command("calls") == []
+
+
+async def test_uri_only_uncached_image_downloads_original_over_real_http(connection):
+    adapter, command, _, _ = connection
+    await command(
+        "image_resource", uri="server/legacy", bytes_base64=base64.b64encode(PNG).decode()
+    )
+    await command(
+        "emit",
+        message=incoming("native-legacy-image", images=[{"uri": "server/legacy"}]),
+    )
+    event = await receive(adapter)
+    image = next(component for component in event.get_messages() if isinstance(component, Image))
+    assert Path(await image.convert_to_file_path()).read_bytes() == PNG
+    assert await command("calls") == []

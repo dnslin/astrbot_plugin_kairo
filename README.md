@@ -15,7 +15,7 @@
 | 文本引用回复 | 保留真实引用作者；媒体和卡片不能附带原生引用或提及 |
 | 收发共用黑白名单 | 每个平台实例分别配置准确工号、原生群会话 ID；主动发送和管理员通知同样受限 |
 | 图片、语音、文件发送 | 跨机器传输实际文件；图片 20 MiB，文件/语音通道 100 MiB；语音输入为有效 WAV/MP3 |
-| 图片、文件接收 | 读取允许目录内已缓存附件；未缓存附件明确提示，不自动下载 |
+| 图片、文件接收 | 图片优先读取允许目录内的原图，缺失时通过 KK9 原生接口下载原图后上传；文件仍仅读取已有缓存 |
 | 私聊、群聊卡片回复 | 原生应用、链接、业务卡片；普通文字可选择自动转应用卡片 |
 | 工号首次私聊通知 | 管理员指令和 Python 接口；仅文本，不要求已有会话 |
 | 已有会话主动发送 | 统一客户端发送文字、媒体和卡片 |
@@ -59,6 +59,8 @@ Docker 部署在原有 AstrBot 服务中追加 `6190:6190` 端口映射。Window
 
 在 KK9 电脑安装 Node.js 24（最低 22.13）、Git、pnpm 11.19.0：
 
+本次原图修复配套固定 Driver 提交 `97729bc61e131592b9b850ad9ed922ca170188c8`，准备脚本、目录依赖及锁文件使用同一提交。无需本机开发仓库链接；按下列常规命令安装即可获得原图字段与下载接口。
+
 ```powershell
 git clone https://github.com/dnslin/astrbot_plugin_kairo.git
 cd astrbot_plugin_kairo/bridge
@@ -76,7 +78,7 @@ Copy-Item config.example.json config.json
 & "C:\Path\To\KK9.exe" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222
 ```
 
-也可用 `bridge/start-kk9-cdp.bat`。停止已运行的桥接后，通过 `pnpm whoami` 只读获取 UID，填入 AstrBot 的 `bot_uid` 和以下配置的 `expectedUserId`：
+也可用 `bridge/start-kk9-cdp.bat`。停止已运行的桥接后，通过 `pnpm run whoami` 只读获取 UID，填入 AstrBot 的 `bot_uid` 和以下配置的 `expectedUserId`：
 
 ```json
 {
@@ -95,7 +97,7 @@ Copy-Item config.example.json config.json
 node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 ```
 
-`attachmentRoots` 为空不影响发送附件，但不会读取收到的本地附件。需要接收时填写 KK9 实际缓存目录，例如 `"C:\\Users\\你的用户名\\实际缓存目录"`，不要填整个磁盘。
+`attachmentRoots` 为空不影响发送附件，也不影响只有远端 URI 的图片通过原生接口下载到桥接自管目录；但不会允许读取 KK9 的任意本地路径。需要复用已有本地原图或接收文件时填写 KK9 实际缓存目录，例如 `"C:\\Users\\你的用户名\\实际缓存目录"`，不要填整个磁盘。已给出的本地路径越界、缓存歧义或读取错误不会靠下载掩盖。
 
 启用 AstrBot 平台，再运行 `pnpm start`。看到“**AstrBot 桥接已连接，使用完整消息收发**”后按下文手动验收。更多参数见 [Windows 桥接说明](bridge/README.md)。
 
@@ -167,9 +169,19 @@ await event.send(MessageChain([Json({
 
 ## 运行边界
 
-发送记录保存在 Windows `data/send-operations.sqlite`，Driver 重建继续使用。同一意图不会因为前置失败或进程重启而再次触发发送。入站 ACK 表示已交给 AstrBot（或已按名单拒绝），不代表模型处理或回复完成；未确认事件和去重状态仅在内存中。服务端附件默认保留 24 小时，总缓存 1 GiB；Windows 下载的发送附件默认保留 24 小时。
+发送记录保存在 Windows `data/send-operations.sqlite`，Driver 重建继续使用。同一意图不会因为前置失败或进程重启而再次触发发送。入站 ACK 表示已交给 AstrBot（或已按名单拒绝），不代表模型处理或回复完成；未确认事件和去重状态仅在内存中。服务端附件默认保留 24 小时，总缓存 1 GiB；Windows 下载的发送附件及收到的原图缓存默认保留 24 小时，由 `fileRetentionHours` 控制。
+
+原生发送确认与本机 KK9 气泡刷新是两步；本机页面暂未显示时，可切换会话后查看历史，不要仅凭页面没刷新重发。插件不强制切换聊天窗口。入站图片保留原生 `filepath_h/uri_h` 对应的原图信息：存在原图字段时不回退缩略图，原图未缓存则由 KK9 原生下载；下载或上传失败会保留具体说明，文本继续处理。没有原图字段的旧单一资源仍按原始资源处理。普通文件远程下载及完整语音接收不在本次范围内。
+
+本次已通过真实原图下载、HTTP 上传及 AstrBot Image 文件字节核对，用户也已手动确认图片识别测试通过。代理没有为复核结果重复调用模型或主动发送消息；该结果不扩展为所有模型、其他媒体或客户端组合的验收。
 
 新安装或升级插件后**重启 AstrBot 和桥接**。插件热重载不保证替换正在运行的平台实例。
+
+## 待发布修复
+
+- 入站图片改为原图缓存优先；缓存缺失时通过配套 Driver 的 KK9 原生接口下载实际原图，桥接自管缓存沿用附件保留期。原图失败不会把缩略图当成功，不新增用户配置；同步更新 Driver 固定提交、准备脚本、目录依赖和锁文件。
+- 保留 URI-only 图片的精确缓存文件名匹配，缓存歧义及路径越界明确报错。
+- 更正 UID 查询命令为 `pnpm run whoami`，避免误调用 pnpm 的包仓库账号查询。
 
 ## 0.2.0 变更记录
 

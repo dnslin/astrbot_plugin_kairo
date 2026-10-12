@@ -19,12 +19,14 @@ let driver;
 let sessions = [];
 let employees = [];
 let messages = [];
+const imageResources = new Map();
 const bridge = new Bridge(config, () => {
   driver = new FakeKK9Driver(store);
   driver.setCurrentUserId(config.expectedUserId);
   driver.setSessions(structuredClone(sessions));
   driver.setEmployees(structuredClone(employees));
   driver.setMessages(structuredClone(messages));
+  for (const [uri, bytes] of imageResources) driver.setImageResource(uri, bytes);
   drivers.push(driver);
   return driver;
 }, (level, message) => console.error(`[${level}] ${message}`));
@@ -41,6 +43,11 @@ try {
       result = true;
     } else if (command.cmd === 'behavior') {
       driver.setSendBehavior(command.behavior);
+      result = true;
+    } else if (command.cmd === 'image_resource') {
+      const bytes = Buffer.from(command.bytes_base64, 'base64');
+      imageResources.set(command.uri, bytes);
+      driver.setImageResource(command.uri, bytes);
       result = true;
     } else if (command.cmd === 'sessions') {
       sessions = command.sessions;

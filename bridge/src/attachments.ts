@@ -1,8 +1,9 @@
+import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { mkdir, open, realpath, readdir, rename, rm, stat, utimes } from 'node:fs/promises';
-import { basename, extname, isAbsolute, join, relative, sep } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { KK9Message } from '@kairo/driver';
+import type { IKK9Driver, KK9ImageInfo, KK9Message } from '@kairo/driver';
 import type { BridgeConfig } from './config.js';
 import { RequestError } from './protocol.js';
 
@@ -33,18 +34,117 @@ export function localAttachmentPath(value: string | undefined): string | null {
 }
 
 export class Attachments {
+  private readonly imageDownloads = new Map<string, Promise<string>>();
   constructor(private readonly config: BridgeConfig, private readonly fetcher: typeof fetch = fetch) {}
 
-  async upload(path: string, kind: 'image' | 'file', name?: string): Promise<{ file_id: string; name: string; size: number }> {
+  private inside(root: string, path: string): boolean {
+    const inside = relative(root, path);
+    return inside !== '' && inside !== '..' && !inside.startsWith(`..${sep}`) && !isAbsolute(inside);
+  }
+
+  private async attachmentPath(path: string): Promise<string> {
+    const roots = [...this.config.attachmentRoots, join(this.config.dataDir, 'attachments')];
+    const actualRoots = await Promise.all(roots.map(async (root) => {
+      try { return await realpath(root); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+    }));
     let actual: string;
-    try { actual = await realpath(path); } catch { throw new Error('附件尚未缓存或缓存不可读取'); }
-    const roots = await Promise.all(this.config.attachmentRoots.map((root) => realpath(root).catch(() => null)));
-    const allowed = roots.some((root) => {
-      if (!root) return false;
-      const inside = relative(root, actual);
-      return inside !== '' && inside !== '..' && !inside.startsWith(`..${sep}`) && !isAbsolute(inside);
-    });
-    if (!allowed) throw new Error('附件缓存路径不在 attachmentRoots 配置内');
+    try { actual = await realpath(path); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      if (!roots.some(root => this.inside(root, path))) throw new Error('附件缓存路径不在 attachmentRoots 或桥接附件缓存目录内');
+      // Windows 对 file/child 也可能返回 ENOENT；区分父目录缺失与父路径实际为文件。
+      let parent = dirname(path);
+      while (true) {
+        try {
+          if (!(await stat(parent)).isDirectory()) throw new Error('附件缓存祖先路径不是目录');
+          break;
+        } catch (parentError) {
+          if ((parentError as NodeJS.ErrnoException).code !== 'ENOENT' || dirname(parent) === parent) throw parentError;
+          parent = dirname(parent);
+        }
+      }
+      throw error;
+    }
+    if (!actualRoots.some(root => root && this.inside(root, actual))) throw new Error('附件缓存路径不在 attachmentRoots 或桥接附件缓存目录内');
+    return actual;
+  }
+
+  private async imagePath(image: KK9ImageInfo): Promise<string | null> {
+    const hasOriginal = image.originalFilePath !== undefined || image.originalUri !== undefined;
+    const local = (hasOriginal ? [image.originalFilePath, image.originalUri] : [image.filePath, image.url, image.uri]).map(localAttachmentPath).find(Boolean);
+    if (local) {
+      try { return await this.attachmentPath(local); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    }
+    // 原图字段存在时，缩略图路径和 URI 都不是可用候选。
+    const resource = (hasOriginal ? image.originalUri ?? '' : image.uri || image.url || '').split(/[?#]/, 1)[0]!.replace(/\\/g, '/').split('/').pop();
+    if (!resource || resource === '.' || resource === '..') return null;
+    for (const root of this.config.attachmentRoots) {
+      let entries: string[];
+      try { entries = await readdir(root); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw error;
+      }
+      if (entries.includes(resource)) return join(root, resource);
+      const prefix = `${resource}.`;
+      const matches = entries.filter(name => name.startsWith(prefix));
+      if (matches.length > 1) throw new Error(`图片资源 ${resource} 对应多个缓存文件，无法确定要读取的图片`);
+      if (matches.length === 1) return join(root, matches[0]!);
+    }
+    return null;
+  }
+
+  private async downloadImage(image: KK9ImageInfo, driver?: Pick<IKK9Driver, 'downloadImage'>): Promise<string> {
+    const hasOriginal = image.originalFilePath !== undefined || image.originalUri !== undefined;
+    const uri = hasOriginal ? image.originalUri : image.uri;
+    if (!uri) throw new Error('图片尚未缓存，且缺少原图下载 URI');
+    const pending = this.imageDownloads.get(uri);
+    if (pending) return pending;
+    const download = this.cacheImage(image, uri, driver);
+    this.imageDownloads.set(uri, download);
+    try { return await download; }
+    finally { this.imageDownloads.delete(uri); }
+  }
+
+  private async cacheImage(image: KK9ImageInfo, uri: string, driver?: Pick<IKK9Driver, 'downloadImage'>): Promise<string> {
+    const id = createHash('sha256').update(uri).digest('hex').slice(0, 32);
+    const directory = join(this.config.dataDir, 'attachments', id);
+    const name = safeFilename((uri.split(/[?#]/, 1)[0] || '').replace(/\\/g, '/').split('/').pop() || 'image');
+    const target = join(directory, name);
+    if (driver) await mkdir(directory, { recursive: true });
+    else {
+      try { await stat(target); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error('图片尚未缓存，当前调用未提供原图下载 Driver');
+        throw error;
+      }
+    }
+    try {
+      await this.attachmentPath(target);
+      const cached = await stat(target);
+      if (!cached.isFile() || cached.size < 1 || cached.size > IMAGE_LIMIT) throw new Error('附件为空或超过 20 MiB 限制');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      if (!driver) throw new Error('图片尚未缓存，当前调用未提供原图下载 Driver');
+      try {
+        const downloaded = await driver.downloadImage(image, target);
+        if (downloaded !== target) throw new Error('原图下载返回的路径与请求的缓存路径不一致');
+        await this.attachmentPath(target);
+        const info = await stat(target);
+        if (!info.isFile() || info.size < 1 || info.size > IMAGE_LIMIT) throw new Error('附件为空或超过 20 MiB 限制');
+      } catch (downloadError) {
+        await rm(target, { force: true }).catch(() => {});
+        throw downloadError;
+      }
+    }
+    await utimes(directory, new Date(), new Date());
+    return target;
+  }
+
+  async upload(path: string, kind: 'image' | 'file', name?: string): Promise<{ file_id: string; name: string; size: number }> {
+    const actual = await this.attachmentPath(path);
     const limit = kind === 'image' ? IMAGE_LIMIT : FILE_LIMIT;
     const file = await open(actual, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
@@ -119,15 +219,14 @@ export class Attachments {
     return target;
   }
 
-  async normalize(message: KK9Message): Promise<WireMessage> {
+  async normalize(message: KK9Message, driver?: Pick<IKK9Driver, 'downloadImage'>): Promise<WireMessage> {
     const { raw: _raw, images: _images, fileInfo: _fileInfo, ...core } = message;
     const result: WireMessage = { ...core };
     if (message.images?.length) {
       result.images = await Promise.all(message.images.map(async (item) => {
-        const { filePath, url, uri, ...metadata } = item;
-        const path = [filePath, url, uri].map(localAttachmentPath).find(Boolean);
+        const { filePath, url, uri, originalFilePath, originalUri, ...metadata } = item;
         try {
-          if (!path) throw new Error('图片尚未缓存；当前版本无法自动下载 KK9 远程附件');
+          const path = await this.imagePath(item) ?? await this.downloadImage(item, driver);
           return { ...metadata, ...await this.upload(path, 'image') };
         } catch (error) {
           return { ...metadata, attachment_error: error instanceof Error ? error.message : '图片不可读取' };
