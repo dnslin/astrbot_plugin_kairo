@@ -240,6 +240,7 @@ export class Bridge {
             if (params.mentions?.length) options.mentions = params.mentions.length === 1 && params.mentions[0]!.uid === 'all'
               ? 'all' : params.mentions.map((item) => item.uid === 'all' ? 'all' as const : item);
             return driver.sendText(params.text, options);
+          case 'voice_text': return driver.sendVoice({ text: params.text }, options);
           case 'app_card': return driver.sendAppMessage(params.card, options);
           case 'url_card': return driver.sendUrlCard(params.card, options);
           case 'biz_card': return driver.sendBizMessage(params.card, options);

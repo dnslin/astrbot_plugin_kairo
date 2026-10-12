@@ -6,6 +6,7 @@ import pytest
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.star import Context
 from astrbot.core.platform.platform_metadata import PlatformMetadata
+from astrbot.core.provider.func_tool_manager import FunctionToolManager
 from astrbot.core.star.star_handler import star_handlers_registry
 from astrbot_plugin_kairo.main import KairoPlugin
 from astrbot_plugin_kairo.mapping import convert_message
@@ -45,6 +46,7 @@ class NotificationPlatform:
 def make_plugin(*platforms):
     context = Context.__new__(Context)
     context.platform_manager = SimpleNamespace(platform_insts=list(platforms))
+    context.provider_manager = SimpleNamespace(llm_tools=FunctionToolManager())
     return KairoPlugin(context)
 
 

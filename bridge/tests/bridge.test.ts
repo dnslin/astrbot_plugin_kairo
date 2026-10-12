@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import { WebSocketServer, WebSocket } from 'ws';
-import { FakeKK9Driver, type KK9Message, InMemorySendOperationStore } from '@kairo/driver';
+import { FakeKK9Driver, type KK9Message, type SendOutcome, InMemorySendOperationStore } from '@kairo/driver';
 import { Bridge } from '../src/bridge.js';
 import { parseConfig } from '../src/config.js';
 
@@ -261,6 +261,93 @@ test('RPC公开查询、三类卡片、图片文件语音和首次工号通知�
     assert.deepEqual((await rpc('get_user_profile', { user_id: '2' })).error, { code: 'NATIVE_PROFILE_FAILED', message: '原生档案查询失败 (403)' });
     driver.getSessions = async () => { throw new Error('原生会话查询断线'); };
     assert.deepEqual((await rpc('get_sessions', {})).error, { code: 'BRIDGE_ERROR', message: '原生会话查询断线' });
+  } finally {
+    bridge.stop(); await running;
+    for (const socket of server.clients) socket.terminate();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await new Promise<void>((resolve) => http.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('文本语音无附件 HTTP 依赖，原生结果及既有发送记录防重并拒绝更换文本', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'kairo-voice-text-'));
+  let httpRequests = 0;
+  const http = createServer((_request, response) => { httpRequests++; response.writeHead(404).end(); });
+  const server = new WebSocketServer({ server: http });
+  await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve));
+  const address = http.address();
+  assert.ok(address && typeof address !== 'string');
+  const config = parseConfig({ serverUrl: `http://127.0.0.1:${address.port}`, token: 'x'.repeat(32), expectedUserId: '1', reconnectDelayMs: 100 }, root);
+  const store = new InMemorySendOperationStore();
+  const driver = new FakeKK9Driver(store);
+  const historicalDriver = new FakeKK9Driver(store);
+  driver.setCurrentUserId('1');
+  const responses = new Map<string, any>();
+  let peer: WebSocket | undefined, ready = false;
+  server.on('connection', (socket) => {
+    peer = socket;
+    socket.on('message', (raw) => {
+      const value = JSON.parse(raw.toString());
+      if (value.type === 'hello') socket.send(JSON.stringify({ type: 'ready', version: 2 }));
+      else if (value.type === 'response') responses.set(value.id, value);
+    });
+  });
+  const bridge = new Bridge(config, () => driver, (_level, text) => { if (text.startsWith('AstrBot 桥接已连接')) ready = true; });
+  const running = bridge.run();
+  let counter = 0;
+  const rpc = async (action: string, params: Record<string, unknown>) => {
+    const id = `voice-rpc-${++counter}`;
+    peer!.send(JSON.stringify({ type: 'request', id, action, params }));
+    await until(() => responses.has(id));
+    return responses.get(id);
+  };
+  const outcomes: SendOutcome[] = [
+    { status: 'sent', messageId: 'voice-message', sessionId: '8', nativeCode: 0, receipt: { draftId: 'voice-draft', sessionId: '8', code: 0, businessCode: 0, messageId: 'voice-message', msgIdx: 7 }, isPreTrigger: false, verifyLatencyMs: 12 },
+    { status: 'failed', error: '原生语音准备失败', nativeCode: 617, isPreTrigger: true },
+    { status: 'unknown', error: '原生发送回执超时', receipt: { draftId: 'pending-voice', sessionId: '8', code: 0 }, isPreTrigger: false, verifyLatencyMs: 20_000 },
+  ];
+  try {
+    await until(() => ready);
+    for (const existing of [false, true]) {
+      for (const outcome of outcomes) {
+        const operation_id = `voice-${existing ? 'existing' : 'new'}-${outcome.status}`;
+        const text = `  读出 ${outcome.status}\n保留原文  `;
+        const params = { operation_id, target_session_id: '8', kind: 'voice_text', text };
+        if (existing) {
+          historicalDriver.setSendBehavior({ mode: 'custom', handler: () => outcome });
+          await historicalDriver.sendVoice({ text }, { targetSessionId: '8', operationId: operation_id });
+        }
+        const before = driver.recordedCalls.length;
+        driver.setSendBehavior({ mode: 'custom', handler: () => outcome });
+        const response = await rpc('send', params);
+        assert.equal(response.ok, true);
+        assert.deepEqual(response.result, { ...outcome, operationId: operation_id });
+        const expectedCalls = before + (existing ? 0 : 1);
+        assert.equal(driver.recordedCalls.length, expectedCalls);
+        if (!existing) {
+          const call = driver.recordedCalls.at(-1)!;
+          assert.equal(call.type, 'voice');
+          assert.deepEqual(call.payload, { text });
+          assert.deepEqual(call.options, { targetSessionId: '8', operationId: operation_id });
+        }
+        driver.setSendBehavior({ mode: 'success', messageId: 'must-not-resubmit' });
+        assert.deepEqual((await rpc('send', params)).result, response.result);
+        assert.deepEqual((await rpc('get_send_status', { operation_id })).result, response.result);
+        const changed = await rpc('send', { ...params, text: '这是不同的发送意图' });
+        assert.equal(changed.ok, false);
+        assert.equal(changed.error.code, 'SEND_ERROR');
+        assert.match(changed.error.message, /fingerprint/);
+        assert.equal(driver.recordedCalls.length, expectedCalls);
+      }
+    }
+    const before = driver.recordedCalls.length;
+    const next = await rpc('send', { operation_id: 'voice-changed-new-intent', target_session_id: '8', kind: 'voice_text', text: '这是不同的发送意图' });
+    assert.equal(next.result.status, 'sent');
+    assert.equal(next.result.operationId, 'voice-changed-new-intent');
+    assert.equal(driver.recordedCalls.length, before + 1);
+    assert.deepEqual(driver.recordedCalls.at(-1)!.payload, { text: '这是不同的发送意图' });
+    assert.equal(httpRequests, 0);
   } finally {
     bridge.stop(); await running;
     for (const socket of server.clients) socket.terminate();

@@ -248,7 +248,10 @@ class BridgeServer:
                 self._queued.discard(event_id)
                 self._events.task_done()
 
-    async def request(self, action: str, params: dict) -> dict:
+    async def request(self, action: str, params: dict, *, timeout: float | None = None) -> dict:
+        """等待本次请求，不改变其他在途请求的默认时限。"""
+        if timeout is not None and timeout <= 0:
+            raise ValueError("请求超时必须大于 0")
         if action not in {
             "send",
             "send_to_user",
@@ -267,7 +270,9 @@ class BridgeServer:
             await ws.send_json(
                 {"type": "request", "id": request_id, "action": action, "params": params}
             )
-            return await asyncio.wait_for(future, timeout=self.request_timeout)
+            return await asyncio.wait_for(
+                future, timeout=self.request_timeout if timeout is None else timeout
+            )
         except TimeoutError as exc:
             raise BridgeError("TIMEOUT", "桥接请求超时，发送可能已经完成，请查询原操作 ID") from exc
         except (ConnectionError, RuntimeError) as exc:
