@@ -5,9 +5,9 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const revision = 'c4c9c677fa8fe3bfa5c4d2ab94505f1b5918efaf';
-// 新目录避免覆盖旧版本 vendor 中已经应用的补丁或用户修改。
-const source = resolve(root, 'vendor', 'kairo-driver-c4c9c677fa8f');
+const revision = 'db186e05a7df6b94de041a9e8f9f8787e1d9d3a6';
+// 使用新目录保留旧版本源码及使用者可能的修改。
+const source = resolve(root, 'vendor', 'kairo-driver-db186e05a7df');
 const repository = process.env.KAIRO_DRIVER_SOURCE || 'https://github.com/dnslin/kairo-driver.git';
 const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
 
@@ -47,7 +47,7 @@ for (const name of ['@audio__decode-wav@1.5.0.patch', 'node-edge-tts@1.2.11.patc
   if (digest(resolve(root, 'patches', name)) !== digest(resolve(source, 'patches', name))) throw new Error(`Driver 音频补丁不一致：${name}`);
 }
 run(pnpm, ['install', '--frozen-lockfile'], source);
-// pnpm 的目录 file 依赖跳过补丁并与原始 checkout 硬链接；归档安装才能隔离并应用源码/产物补丁。
+// 从标准包归档安装源码及编译产物，不依赖开发目录或 checkout 硬链接。
 // pack 的 prepack 已执行 build，且 pnpm 固定归档时间戳，避免重复编译和不稳定的包身份。
-run(pnpm, ['pack', '--out', '../kairo-driver-c4c9c677fa8f.tgz'], source);
-console.log(`Driver ${revision} 已准备完成（vendor/kairo-driver-c4c9c677fa8f.tgz）；继续运行 pnpm install --frozen-lockfile。`);
+run(pnpm, ['pack', '--out', '../kairo-driver-db186e05a7df.tgz'], source);
+console.log(`Driver ${revision} 已准备完成（vendor/kairo-driver-db186e05a7df.tgz）；继续运行 pnpm install --frozen-lockfile。`);

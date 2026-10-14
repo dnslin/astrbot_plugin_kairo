@@ -6,10 +6,8 @@ import { runInNewContext } from 'node:vm';
 import test from 'node:test';
 import type { IKK9Driver, SendOptions, SendResult } from '@kairo/driver';
 
-// Resolve the installed package, not the immutable vendor checkout: these tests
-// exercise the distributable pnpm patch and its actual generated renderer script.
-// Static subpath imports are blocked by package exports; intentionally load the
-// internal module from the installed entry point to test the package boundary.
+// 定位已安装的 Driver 包而非原始 vendor checkout，验证消费方实际产物及生成的渲染脚本。
+// 包 exports 不公开内部子路径，从安装入口定位内部模块以覆盖安装后的包边界。
 const entry = pathToFileURL(createRequire(import.meta.url).resolve('@kairo/driver'));
 type CardOps = Pick<IKK9Driver, 'sendAppMessage' | 'sendUrlCard' | 'sendBizMessage' | 'sendText' | 'sendImage' | 'sendChatRecord' | 'getSendStatus'> & { cancelPendingSends(): Promise<void> };
 const { BridgeMessageOps }: { BridgeMessageOps: new (cdp: NativeRenderer) => CardOps } = await import(new URL('./bridge/message-ops.js', entry).href);

@@ -15,7 +15,7 @@
     "check": "pnpm build && pnpm test"
   },
   "dependencies": {
-    "@kairo/driver": "file:vendor/kairo-driver-c4c9c677fa8f.tgz",
+    "@kairo/driver": "file:vendor/kairo-driver-db186e05a7df.tgz",
     "ws": "8.19.0"
   },
   "devDependencies": {

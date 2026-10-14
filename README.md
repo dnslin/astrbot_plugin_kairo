@@ -73,7 +73,7 @@ Docker 部署在原有 AstrBot 服务中追加 `6190:6190` 端口映射。桥接
 
 ### Linux 或 Windows：安装桥接
 
-在桥接机器安装 Node.js 24（最低 22.13）、Git、pnpm 11.19.0。当前固定上游 [main 提交 `c4c9c677fa8fe3bfa5c4d2ab94505f1b5918efaf`](https://github.com/dnslin/kairo-driver/commit/c4c9c677fa8fe3bfa5c4d2ab94505f1b5918efaf)，包含 Edge TTS 新端点及资源清理补丁、完整人员搜索、远程 CDP 与跨机器附件传输。上游包版本仍为 2.0.1，不能仅靠版本号区分源码；准备脚本从固定源码生成归档包，冻结安装应用本仓库的卡片定向发送补丁，不依赖本机开发仓库链接。
+在桥接机器安装 Node.js 24（最低 22.13）、Git、pnpm 11.19.0。当前固定上游 [main 提交 `db186e05a7df6b94de041a9e8f9f8787e1d9d3a6`](https://github.com/dnslin/kairo-driver/commit/db186e05a7df6b94de041a9e8f9f8787e1d9d3a6)，原生包含三类卡片、图片及文件的准确工号定向发送，并保留 Edge TTS 新端点及资源清理、完整人员搜索、远程 CDP 与跨机器附件传输。上游包版本仍为 2.0.1，不能仅靠版本号区分源码；准备脚本从固定源码生成归档包，不需要本插件再给 Driver 打发送补丁，不依赖本机开发链接。两份音频依赖补丁仍保留。
 
 Linux 执行：
 
@@ -271,10 +271,11 @@ if result["status"] == "unknown":
 - 修复按姓名通知将数字 UID 误判为身份缺失的问题：桥接将员工档案 UID 统一为字符串，与搜索候选一致；真实工号缺失或身份变化仍拒绝发送。更新桥接后执行 `pnpm build` 并重启桥接，无须修改管理员 ID。
 - 本次 `pnpm check` 构建及 44 项 Node 测试、Python 全套 287 项测试通过；新增数字 UID 跨语言回归修复前失败、修复后通过。编译产物、真实 WebSocket/SQLite 隔离烟测确认身份变化拒绝、同意图仅一次 Fake 发送；未向真实员工发送消息，未重启生产服务。
 - 三个卡片工具新增可选员工姓名 `name`，支持管理员跨会话推送及首次私聊；不传姓名仍发当前会话。文本与卡片共用重名选择、身份复查、动态名单及一次发送规则，不预发文本建立会话。
-- 桥接新增 `send_card_to_user`；准备脚本改为生成固定源码归档包，使 pnpm 能实际应用 Driver 定向卡片补丁。升级时先执行 `node scripts/prepare-driver.mjs`、`pnpm install --frozen-lockfile`、`pnpm build`，再重启 AstrBot 与桥接。
+- 桥接新增 `send_card_to_user`；准备脚本从固定 Driver 源码生成标准归档包。定向发送能力已合入 Driver，本插件不再维护 Driver 发送补丁。升级时先执行 `node scripts/prepare-driver.mjs`、`pnpm install --frozen-lockfile`、`pnpm build`，再重启 AstrBot 与桥接。
 - 卡片跨会话验证：构建及 62 项 Node 测试、Python 全套 321 项测试通过，Ruff 规则和格式检查通过。独立编译产物烟测通过真实 AstrBot、WebSocket 与 SQLite 验证三类卡片、重名选择、首次联系及 unknown 不重发；仅 KK9 使用 Fake，未发送真实消息或重启生产服务。
 - 新增 `kairo_send_image`、`kairo_send_file`，支持当前消息附件及管理员指定的已有本地文件；可选员工姓名 `name` 复用管理员跨会话推送、首次私聊和重名选择。附件在查人前保存快照，未知结果不重发。
-- 桥接新增 `send_media_to_user`，Driver 补丁扩展准确工号图片/文件发送、正式会话回执及取消时的附件清理。冻结安装成功；`pnpm check` 构建及 86 项 Node、Python 全套 357 项、Ruff 规则及 21 文件格式检查通过。独立编译产物真实 AstrBot/HTTP/WS/SQLite 烟测通过，仅 KK9 使用 Fake；未发送真实消息、重启生产服务或验收接收端呈现。
+- 桥接新增 `send_media_to_user`，Driver 原生支持准确工号图片/文件发送、正式会话回执及取消时的附件清理。冻结安装成功；`pnpm check` 构建及 86 项 Node、Python 全套 357 项、Ruff 规则及 21 文件格式检查通过。独立编译产物真实 AstrBot/HTTP/WS/SQLite 烟测通过，仅 KK9 使用 Fake；未发送真实消息、重启生产服务或验收接收端呈现。
+- Driver 发送补丁已合入并推送上游 main `db186e05a7df`；插件准备脚本、归档依赖及锁文件切换到该提交，删除 `@kairo/driver` 补丁配置和文件，保留两份音频补丁。新依赖远端准备、冻结安装、桥接构建及 86 项 Node、357 项 Python 回归通过；无 Driver 补丁的编译产物 HTTP/WS/SQLite 烟测验证五类定向输出、附件字节及 unknown 防重。
 
 ## 0.5.1 变更记录
 
