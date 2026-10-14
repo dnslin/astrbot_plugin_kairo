@@ -2,9 +2,9 @@
 
 通过 [kairo-driver](https://github.com/dnslin/kairo-driver) 把 KK9 接入 AstrBot，无需修改 AstrBot 源码。
 
-根目录是 AstrBot 平台插件，`bridge/` 是运行在 KK9 电脑上的 Node.js 桥接程序。Windows 主动连接 AstrBot；KK9 的 CDP（客户端调试接口）只保留在本机。
+根目录是 AstrBot 平台插件，`bridge/` 是运行在 Linux 或 Windows 上的 Node.js 桥接程序。桥接主动连接 AstrBot，并通过本机或远程 CDP（客户端调试接口）访问仍运行在 Windows 上的 KK9；不要求桥接与 KK9 同机，也不需要共享磁盘或另建 Windows 文件服务。
 
-**0.3.0 已完成自动验证及实际语音合成/编码验证，接收端播放和卡片呈现仍需人工验收。** 下表描述已接通的实现，不等于全部真机测试通过。KK9 不支持流式输出，本插件等完整回复生成后发送。
+**0.4.0 支持 Linux 桥接通过远程 CDP 连接 Windows KK9，接收附件由 Driver 跨机器传输。** 本轮构建及 42 项 Node、187 项 Python 检查通过，并验证了 Windows 桥接到远程 Windows KK9 的真实附件传输；Linux + Windows 真机运行、接收端播放和卡片呈现仍需独立验收。KK9 不支持流式输出，本插件等完整回复生成后发送。
 
 ## 能力范围
 
@@ -15,15 +15,15 @@
 | 文本引用回复 | 保留真实引用作者；媒体和卡片不能附带原生引用或提及 |
 | 收发共用黑白名单 | 每个平台实例分别配置准确工号、原生群会话 ID；主动发送和管理员通知同样受限 |
 | 图片、语音、文件发送 | 跨机器传输实际文件；图片 20 MiB，文件/语音通道 100 MiB；语音输入为有效 WAV/MP3 |
-| 按需文字转语音 | 专用模型工具调用 Windows Driver 合成并发送；不依赖 AstrBot TTS 或 FFmpeg |
-| 图片、文件接收 | 图片优先读取允许目录内的原图，缺失时通过 KK9 原生接口下载原图后上传；文件仍仅读取已有缓存 |
+| 按需文字转语音 | 专用模型工具调用桥接端 Driver 合成并发送；不依赖 AstrBot TTS 或 FFmpeg |
+| 图片、文件接收 | 图片由 Driver 读取 KK9 准确原图缓存或原生下载；普通文件由 Driver 传输 KK9 已有缓存 |
 | 私聊、群聊卡片回复 | 原生应用、链接、业务卡片；普通文字可选择自动转应用卡片 |
 | 工号首次私聊通知 | 管理员指令和 Python 接口；仅文本，不要求已有会话 |
 | 已有会话主动发送 | 统一客户端发送文字、媒体和卡片 |
 | 群内员工上下文隔离 | 默认开启；关闭后整群共享上下文 |
 | 连接恢复 | WebSocket 重连、未确认事件重放、失效 Driver 重建；不自动补发未知结果 |
 
-模型、知识库和文件解析继续由 AstrBot 负责；按需文字转语音使用 Windows Driver 的 Edge 服务。完整语音接收、卡片按钮、撤回、组织架构同步和历史消息补偿不在本轮范围。
+模型、知识库和文件解析继续由 AstrBot 负责；按需文字转语音使用桥接端 Driver 的 Edge 服务。完整语音接收、卡片按钮、撤回、组织架构同步和历史消息补偿不在本轮范围。
 
 ## 1. 安装 AstrBot 插件
 
@@ -40,7 +40,7 @@ https://github.com/dnslin/astrbot_plugin_kairo
 | 配置项 | 用法 |
 | --- | --- |
 | 平台 ID | 如 `kairo`，多实例需不同 ID；使用后保持稳定 |
-| `host` / `port` | 默认 `0.0.0.0:6190`；接受 Windows 桥接连接 |
+| `host` / `port` | 默认 `0.0.0.0:6190`；接受 Linux 或 Windows 桥接连接 |
 | `token` | 两端一致，至少 32 个无空白 ASCII 字符 |
 | `bot_uid` | Windows 实际登录的机器人 UID，与桥接 `expectedUserId` 一致 |
 | `isolate_group_users` | 默认 `true`；关闭后整群共享上下文 |
@@ -54,24 +54,11 @@ https://github.com/dnslin/astrbot_plugin_kairo
 
 AstrBot 原生白名单仍可进一步限制入站，但不替代本插件的收发规则。群聊是否唤醒由 AstrBot 的 @、唤醒词、引用和其他配置决定，插件不会强制普通群消息唤醒。Kairo 的群隔离独立于宿主 `unique_session`；部分群会话管理命令仍需要 AstrBot 管理员权限。
 
-Docker 部署在原有 AstrBot 服务中追加 `6190:6190` 端口映射。Windows 必须能访问此端口；公网连接使用 HTTPS/WSS，不要公开 KK9 CDP 端口。
+Docker 部署在原有 AstrBot 服务中追加 `6190:6190` 端口映射。桥接机器必须能访问此端口；公网连接使用 HTTPS/WSS，不要公开 KK9 CDP 端口。
 
-## 2. 启动 Windows 桥接
+## 2. 启动 KK9 与桥接
 
-在 KK9 电脑安装 Node.js 24（最低 22.13）、Git、pnpm 11.19.0：
-
-当前配套固定 [Driver 2.0.1](https://github.com/dnslin/kairo-driver/releases/tag/v2.0.1) 提交 `8208e78b1134484f8b374edb33ee2d595e624591`，包含共用原图来源规则、文本 TTS 标准代理接入和代理超时连接释放；准备脚本、目录依赖和锁文件使用同一提交，不依赖本机开发仓库链接。
-
-```powershell
-git clone https://github.com/dnslin/astrbot_plugin_kairo.git
-cd astrbot_plugin_kairo/bridge
-node scripts/prepare-driver.mjs
-pnpm install --frozen-lockfile
-pnpm build
-Copy-Item config.example.json config.json
-```
-
-准备脚本获取固定新版 Driver 源码并构建，无需手动复制或修改相邻 Driver 仓库。更新时 Python 插件和桥接必须一起更新；协议 v2 不兼容旧桥接，旧会话标识和数据不做迁移。保留现有运行目录，不要删除发送数据库来解决 `unknown`。
+### Windows：启动 KK9
 
 完全退出 KK9，再按实际安装路径启动并登录机器人账号：
 
@@ -79,28 +66,66 @@ Copy-Item config.example.json config.json
 & "C:\Path\To\KK9.exe" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222
 ```
 
-也可用 `bridge/start-kk9-cdp.bat`。停止已运行的桥接后，通过 `pnpm run whoami` 只读获取 UID，填入 AstrBot 的 `bot_uid` 和以下配置的 `expectedUserId`：
+也可用 `bridge/start-kk9-cdp.bat`。KK9 默认只监听 Windows 回环地址。本机部署可以直接使用 `http://127.0.0.1:9222`；Linux 桥接通过 SSH 隧道或限定来源的 Windows 端口转发访问，例如受限网络中的 `http://172.16.0.18:9222`。不要把无认证 CDP 裸露到公网。
+
+`cdp.url` 填 HTTP/HTTPS **发现基址**，不填 WebSocket 地址、URL 凭据、查询参数、片段或末尾 `/json`。合法反向代理路径前缀会保留，例如 `https://kk9.example.com/cdp/kk9`；Driver 去掉尾斜杠后追加 `/json`。发现返回的 `webSocketDebuggerUrl` 必须从桥接机器可达，Driver 按原值连接，**不自动改写主机、端口或 ws/wss**；隧道/代理也必须满足这一条件。HTTPS/WSS 使用 Node 的正常证书校验。
+
+### Linux 或 Windows：安装桥接
+
+在桥接机器安装 Node.js 24（最低 22.13）、Git、pnpm 11.19.0。当前固定上游 [main 提交 `1c4223fee51296ff68aa8f18b98d406bcdd800c8`](https://github.com/dnslin/kairo-driver/commit/1c4223fee51296ff68aa8f18b98d406bcdd800c8)，包含远程 CDP 与跨机器图片/缓存文件传输。上游包版本仍为 2.0.1，不能仅靠版本号区分源码；准备脚本、目录依赖和锁文件以该提交为准，不依赖本机开发仓库链接。
+
+Linux 执行：
+
+```bash
+git clone https://github.com/dnslin/astrbot_plugin_kairo.git
+cd astrbot_plugin_kairo/bridge
+node scripts/prepare-driver.mjs
+pnpm install --frozen-lockfile
+pnpm build
+cp config.example.json config.json
+```
+
+Windows 本机部署执行同样的准备、安装和构建命令，复制配置改用 PowerShell：
+
+```powershell
+Copy-Item config.example.json config.json
+```
+
+准备脚本获取固定 Driver 源码并构建，无需手动复制或修改相邻 Driver 仓库。升级时先停止桥接，Python 插件和桥接一起更新；协议 v2 不兼容旧桥接，旧会话标识和数据不做迁移。保留现有运行目录，不要删除发送数据库来解决 `unknown`。旧的本机缓存根目录配置已移除，升级配置时删除该项；同机部署也统一使用 Driver 传输附件。
+
+停止已运行的桥接后，先在 `bridge/config.json` 填写 `cdp.url`，再在桥接目录只读获取 UID（无需先填机器人 UID）：
+
+```bash
+pnpm run whoami
+```
+
+Linux 和 Windows 均默认读取当前目录 `config.json` 的 `cdp.url`、`cdp.pageMatch`；其他配置可用 `pnpm run whoami --config /srv/kairo/config.json` 指定。临时覆盖地址使用 `KAIRO_CDP_URL`，覆盖页面片段使用 `KAIRO_PAGE_MATCH`，环境变量优先于文件。首次还没有默认配置时，可用环境变量直接查询；显式配置不存在或 JSON 损坏会明确报错，不切回本机。把 UID 填入 AstrBot 的 `bot_uid` 和桥接 `expectedUserId`。这里不能省略 `run`：`pnpm whoami` 是包仓库账号查询。
+
+Linux 桥接 + Windows KK9 的配置示例：
 
 ```json
 {
   "serverUrl": "http://你的AstrBot服务器IP:6190",
   "token": "与AstrBot中相同的随机Token",
   "expectedUserId": "机器人UID",
-  "cdp": { "url": "http://127.0.0.1:9222", "pageMatch": "renderer.html" },
-  "attachmentRoots": [],
+  "cdp": { "url": "http://172.16.0.18:9222", "pageMatch": "renderer.html" },
   "dataDir": "./data"
 }
 ```
 
-生成 Token：
+本机部署把 `cdp.url` 改为 `http://127.0.0.1:9222` 即可。`dataDir` 始终属于桥接机器；上述 Linux 部署会将数据库和附件保存到 Linux 本地，相对路径以配置文件目录为准，不填写 Windows KK9 缓存路径。
 
-```powershell
+生成 Token（Linux/Windows 均可）：
+
+```text
 node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 ```
 
-`attachmentRoots` 为空不影响发送附件，也不影响只有远端 URI 的图片通过原生接口下载到桥接自管目录；但不会允许读取 KK9 的任意本地路径。需要复用已有本地原图或接收文件时填写 KK9 实际缓存目录，例如 `"C:\\Users\\你的用户名\\实际缓存目录"`，不要填整个磁盘。已给出的本地路径越界、缓存歧义或读取错误不会靠下载掩盖。
+接收图片统一调用 `driver.downloadImage(image, bridgeLocalTarget)`，优先准确原图缓存、缺失才由 KK9 原生下载；接收普通文件统一调用 `driver.saveFile(fileInfo, bridgeLocalTarget)`，**只支持 KK9 已缓存文件**，未缓存明确失败，不提供普通文件下载协议。消息中的 Windows 路径只交给 Driver，不在桥接机器解析、检查或读取。无需配置本机附件扫描目录。
 
-启用 AstrBot 平台，再运行 `pnpm start`。看到“**AstrBot 桥接已连接，使用完整消息收发**”后按下文手动验收。更多参数见 [Windows 桥接说明](bridge/README.md)。
+发送图片、普通文件和语音分别继续调用 `sendImage(file)`、`sendFile(file)`、`sendVoice({filePath: file})`；输入均为桥接机器的本地文件。Driver 经 CDP 传输图片和普通文件，语音在桥接端读取有效 WAV/MP3 后交给 Windows 编码，不把 Linux 路径当作 Windows 原生路径。
+
+启用 AstrBot 平台，再在桥接机器运行 `pnpm start`。看到“**AstrBot 桥接已连接，使用完整消息收发**”后按下文手动验收。更多参数见 [桥接说明](bridge/README.md)。
 
 ## 3. 工号通知和其他插件调用
 
@@ -171,11 +196,17 @@ await event.send(MessageChain([Json({
 
 要按需选择输出，保持 `reply_format=text`，并关闭 AstrBot 自动语音回复；这两个配置不会被插件自动修改。`reply_format=card` 仍表示所有普通文字自动转卡片，不是按需开关。自然语言是否调用工具由模型判断，不是严格指令触发，不能保证每种口语或否定表达都判断正确。
 
-语音链路为工具 → `KairoClient.send_voice_text()` → `voice_text` 请求 → `Driver.sendVoice({text})`。不调用 AstrBot TTS、Python/Shell 工具或宿主 FFmpeg；使用 Driver 默认音色 `zh-CN-XiaoxiaoNeural`，不继承 AstrBot 的音色、语速或代理配置。运行桥接的 Node 进程必须能访问 Edge 服务。需要代理时，在启动桥接的 PowerShell 中设置实际地址，例如：
+语音链路为工具 → `KairoClient.send_voice_text()` → `voice_text` 请求 → `Driver.sendVoice({text})`。不调用 AstrBot TTS、Python/Shell 工具或宿主 FFmpeg；使用 Driver 默认音色 `zh-CN-XiaoxiaoNeural`，不继承 AstrBot 的音色、语速或代理配置。运行桥接的 Node 进程必须能访问 Edge 服务。需要代理时，在桥接机器设置实际地址；Windows PowerShell 示例：
 
 ```powershell
 $env:HTTPS_PROXY = "http://127.0.0.1:7897"
 pnpm start
+```
+
+Linux 示例：
+
+```bash
+HTTPS_PROXY=http://127.0.0.1:7897 pnpm start
 ```
 
 Driver 优先使用非空 `HTTPS_PROXY`，其次非空 `HTTP_PROXY`；均未设置时保持直连。不会自动读取 Windows 系统代理，指定代理失败也不会再尝试直连。文字语音请求单独等待最多 90 秒，其他请求默认 30 秒；工具执行超时建议保留 120 秒或以上。排队、断线或超时仍可能返回未知结果，只按原操作 ID 查询，不重发。
@@ -192,7 +223,7 @@ if result["status"] == "unknown":
 
 ## 5. 手动验收
 
-本轮真实 KK9 验收由使用者手动完成。先指定一个测试私聊、一个测试群和一个尚无会话的准确测试工号，避免误发到业务会话：
+升级后的真实 KK9 验收由使用者手动完成；Linux + Windows 远程部署还应核对 CDP 发现及返回 WebSocket 的可达性、图片原图和已缓存普通文件的实际字节。先指定一个测试私聊、一个测试群和一个尚无会话的准确测试工号，避免误发到业务会话：
 
 1. 私聊和群聊分别发送文字；群里测试 @ 本人、@ 他人、@ 全体和引用机器人，核对宿主唤醒设置及是否重复回复。
 2. 开关群隔离，同群两位员工分别交谈；确认发送目标不随当前聊天窗口改变。
@@ -205,22 +236,31 @@ if result["status"] == "unknown":
 
 ## 运行边界
 
-发送记录保存在 Windows `data/send-operations.sqlite`，Driver 重建继续使用。同一意图不会因为前置失败或进程重启而再次触发发送。入站 ACK 表示已交给 AstrBot（或已按名单拒绝），不代表模型处理或回复完成；未确认事件和去重状态仅在内存中。服务端附件默认保留 24 小时，总缓存 1 GiB；Windows 下载的发送附件及收到的原图缓存默认保留 24 小时，由 `fileRetentionHours` 控制。
+发送记录保存在桥接机器的 `dataDir/send-operations.sqlite`，Driver 重建继续使用。同一意图不会因为前置失败或进程重启而再次触发发送。入站 ACK 表示已交给 AstrBot（或已按名单拒绝），不代表模型处理或回复完成；未确认事件和去重状态仅在内存中。服务端附件默认保留 24 小时，总缓存 1 GiB；桥接本地下载的发送附件及接收附件默认保留 24 小时，由 `fileRetentionHours` 控制，Linux 部署不写 Windows 数据目录。
 
-原生发送确认与本机 KK9 气泡刷新是两步；本机页面暂未显示时，可切换会话后查看历史，不要仅凭页面没刷新重发。插件不强制切换聊天窗口。入站图片保留原生 `filepath_h/uri_h` 对应的原图信息：存在原图字段时不回退缩略图，原图未缓存则由 KK9 原生下载；下载或上传失败会保留具体说明，文本继续处理。没有原图字段的旧单一资源仍按原始资源处理。普通文件远程下载及完整语音接收不在本次范围内。
+原生发送确认与 Windows KK9 气泡刷新是两步；页面暂未显示时，可切换会话后查看历史，不要仅凭页面没刷新重发。插件不强制切换聊天窗口。入站图片由 Driver 保留原生 `filepath_h/uri_h` 对应的原图语义：存在原图字段时不回退缩略图，原图未缓存则由 KK9 原生下载；下载或上传失败会保留具体说明，文本继续处理。没有原图字段的旧单一资源仍按原始资源处理。普通文件只能由 `saveFile` 传输 Windows KK9 已缓存内容，不能下载未缓存文件；完整语音接收不在本次范围内。
 
-本次已通过真实原图下载、HTTP 上传及 AstrBot Image 文件字节核对，用户也已手动确认图片识别测试通过。代理没有为复核结果重复调用模型或主动发送消息；该结果不扩展为所有模型、其他媒体或客户端组合的验收。
+历史原图缓存审计已通过真实原图下载、HTTP 上传及 AstrBot Image 文件字节核对，用户也已手动确认图片识别测试通过。代理没有为复核结果重复调用模型或主动发送消息；该历史结果不扩展为此次远程适配、所有模型、其他媒体或客户端组合的验收。上游远程附件验收只证明上游记录的环境和范围，不替代本插件端到端验收。
 
 新安装或升级插件后**重启 AstrBot 和桥接**。插件热重载不保证替换正在运行的平台实例。
+
+## 0.4.0 变更记录
+
+- 固定到上游 main 提交 `1c4223fee51296ff68aa8f18b98d406bcdd800c8`，允许现有 `cdp.url` 和 UID 命令连接远程 HTTP/HTTPS 发现基址，同时明确拒绝凭据、查询、片段和末尾 `/json`。
+- 桥接可在 Linux 运行、KK9 保留在 Windows；接收图片和已缓存普通文件统一通过 Driver 传输，移除桥接扫描 KK9 本机缓存根目录的配置和实现。发送接口不变，输入文件路径属于桥接机器。
+- 修复 UID 查询仍连接默认本机地址的问题：`pnpm run whoami` 默认读取桥接 `config.json`，支持 `--config`；环境变量可临时覆盖，失败时显示实际连接地址。
+- 图片与文件保留独占临时路径、大小检查、完整缓存复用和保留期清理；普通文件未缓存时明确失败，不新增普通文件下载协议。
+- 升级时先停止旧桥接，删除已移除的 `attachmentRoots` 配置，保留 `dataDir` 和发送数据库，重新准备 Driver、冻结安装并构建，再重启 AstrBot 与桥接。
+- 历史本机验收事实继续保留；此次远程部署须独立验收，不把上游通过记录当成本插件通过。
 
 ## 0.3.0 变更记录
 
 - 入站图片改为原图缓存优先；缓存缺失时通过配套 Driver 的 KK9 原生接口下载实际原图，桥接自管缓存沿用附件保留期。原图失败不会把缩略图当成功，不新增用户配置；同步更新 Driver 固定提交、准备脚本、目录依赖和锁文件。
-- 保留 URI-only 图片的精确缓存文件名匹配，缓存歧义及路径越界明确报错。
+- 早期版本曾保留 URI-only 图片的精确缓存文件名匹配及歧义/越界检查；当前远程适配已用 Driver 统一附件传输替代桥接本机扫描。
 - 更正 UID 查询命令为 `pnpm run whoami`，避免误调用 pnpm 的包仓库账号查询。
 - 新增仅当前 Kairo 会话的按需语音、应用/链接/业务卡片工具；保留人格停用选择、名单和原生目标，重复尝试及未知结果不重发，等待取消后保留原操作 ID 供查询。
 - 新增明确的 `voice_text` 桥接类型和独立请求时限；文字合成由 Driver 完成，网络代理使用 Node 进程标准环境变量，不增加宿主 TTS 或兼容路径。
-- 依赖升级到配套 Driver 2.0.1，按其已发布源码提交固定准备脚本、目录依赖与锁文件；先发布依赖，再发布插件。
+- 历史发布曾配套 Driver 2.0.1；当前源码身份以以上远程适配的 main 固定提交为准。
 - 已知验证边界：真实接收端播放/卡片呈现及模型选择仍待人工验收；一次图片往返缺图未定位根因，后续完整检查和连续往返通过，不宣称已修复该偶发问题。
 
 ## 0.2.0 变更记录

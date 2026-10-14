@@ -17,10 +17,10 @@
 ## 依赖来源
 
 - AstrBot 验证基线：`v4.29.0-beta.1`，元数据约束 `>=4.29.0b1,<5`。该基线不是稳定版承诺。
-- Driver 固定提交：`8208e78b1134484f8b374edb33ee2d595e624591`，对应已先行发布的 `v2.0.1`；源码获取、目录依赖与音频补丁保持一致。
+- Driver 固定提交：`1c4223fee51296ff68aa8f18b98d406bcdd800c8`，为合并远程附件支持后的 main；包版本仍为 2.0.1，不等同于旧 `v2.0.1` 发布提交。源码获取、目录依赖与音频补丁保持一致。
 - Python 3.12+、Node.js 22.13+（推荐 24）、pnpm 11.19.0。
 
-Python 插件只声明 `aiohttp`，AstrBot API 与工具 schema 校验依赖由宿主提供。Driver 尚未发布 npm；准备脚本固定检出、按上游锁文件安装并构建，通过 `file:vendor/kairo-driver-8208e78b1134` 目录依赖消费。保留并同步上游两份音频依赖补丁，不再应用 `driver-native-send.patch`。更新固定提交时同步准备脚本、依赖目录名、补丁和锁文件；共用原图规则来自 Driver PR #15，文字 TTS 代理与 CONNECT 超时释放修复来自已合并的 [PR #16](https://github.com/dnslin/kairo-driver/pull/16)。
+Python 插件只声明 `aiohttp`，AstrBot API 与工具 schema 校验依赖由宿主提供。Driver 尚未发布 npm；准备脚本固定检出、按上游锁文件安装并构建，通过 `file:vendor/kairo-driver-1c4223fee512` 目录依赖消费。保留并同步上游两份音频依赖补丁，不再应用 `driver-native-send.patch`。更新固定提交时同步准备脚本、依赖目录名、补丁和锁文件；远程附件来自已合并的 [Driver PR #17](https://github.com/dnslin/kairo-driver/pull/17)，保留 PR #15 的原图规则和 PR #16 的文字 TTS 代理及 CONNECT 超时释放修复。
 
 准备过程先在独立临时目录检出，完成后才发布最终目录；中断可重试。已有最终目录若提交不符或跟踪文件修改则明确报错，不覆盖修改。不使用本机 tarball 作为跨系统锁文件输入。
 
@@ -101,7 +101,7 @@ CI 的 Node 检查覆盖 Windows/Linux，集成任务引用 `v4.29.0-beta.1`。0
 - [AstrBot 平台注册源码](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.0-beta.1/astrbot/core/platform/register.py)
 - [AstrBot 平台生命周期源码](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.0-beta.1/astrbot/core/platform/platform.py)
 - [AstrBot 消息模型源码](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.0-beta.1/astrbot/core/platform/astrbot_message.py)
-- [Driver 公开接口](https://github.com/dnslin/kairo-driver/blob/8208e78b1134484f8b374edb33ee2d595e624591/src/types/index.ts)
+- [Driver 公开接口](https://github.com/dnslin/kairo-driver/blob/1c4223fee51296ff68aa8f18b98d406bcdd800c8/src/types/index.ts)
 - [aiohttp WebSocket 与文件响应](https://docs.aiohttp.org/en/stable/web_reference.html)
 
 官方平台教程部分示例仍采用旧构造参数，实现以验证基线源码为准。规划时调查记录保留在 [plan.md](../tasks/plan.md)，其中旧版问题是调查快照，不是当前实现说明。
@@ -157,3 +157,40 @@ Git HTTPS直连推送两次不可达，读取现有Windows系统代理后使用�
 
 独立 Python 进程以内联脚本运行真实 AstrBot 平台/事件/工具、真实 HTTP/WS、编译 bridge 和 SQLite，KK9 使用已发布 Fake：三类卡片均在原生请求提交后取消等待，重复调用保留同一个 unknown 操作 ID、不再提交；原生完成后通过公共 `get_send_status` 查询原 ID，三份结果均为 sent，总原生调用仅 3 次。隔离宿主、进程、服务及临时数据库全部退出并清理，没有发送真实消息。
 
+
+## 远程 CDP 附件适配
+
+配套依赖从旧 2.0.1 发布提交切换到合并 [Driver PR #17](https://github.com/dnslin/kairo-driver/pull/17) 的 main 提交 `1c4223fee51296ff68aa8f18b98d406bcdd800c8`，准备脚本、目录依赖及锁文件同步固定。上游包版本仍为 2.0.1，本次以提交身份区分。没有改动 Driver 源码、音频补丁、运行配置或生产桥接进程。
+
+桥接和 UID 命令接受远程 HTTP/HTTPS 发现基址及路径前缀；不自动改写发现返回的 WebSocket 地址。移除旧 `attachmentRoots` 配置和桥接本机目录扫描。图片统一调用 `downloadImage`，普通已缓存文件统一调用 `saveFile`，两者先保存到桥接自管目录再上传 AstrBot。仅有 Windows 准确原图路径、没有 URI 的图片也可处理；所有远端路径仅作为来源标识交给 Driver，不做桥接本地文件读取。发送侧调用不变，仍传桥接本机路径，保留既有发送防重和结果语义。
+
+接收图片和文件复用按类别及来源区分的缓存保存逻辑：独占临时路径、真实文件及大小检查、完成后发布、并发同源复用、上传失败后重开复用和保留期清理。原图 20 MiB、普通文件 100 MiB 限制不变；文件未缓存仍逐项报错，不影响正文，不增加普通文件下载协议或 Windows 文件服务。
+
+### 本轮执行结果
+
+- 使用 Node 22.23.0、pnpm 11.19.0 执行 `node scripts/prepare-driver.mjs`、`pnpm install --lockfile-only --offline`、`pnpm install --frozen-lockfile`：固定源码冻结安装及构建、桥接锁文件生成及冻结安装通过。系统默认 Node 14 曾因不支持 `--import`、pnpm 启动器选择旧 Node 而失败；仅调整本次验证进程的 PATH，未修改持久环境。
+- 新增“Windows 原图缓存无 URI 与普通文件均由 Driver 保存到桥接本地后上传”回归：旧桥接实际失败（上传字节为空），改造后通过。`pnpm check`：TypeScript 构建及 39 项 Node 测试通过；保留 SQLite 实验特性警告。
+- 设置 `ASTRBOT_SOURCE=D:/Person/AstrBot`，用 AstrBot 虚拟环境执行 `python.exe -m pytest -q --tb=short`：最终 187 项通过，无跳过，保留 `audioop` 弃用警告。首次有 1 项旧 URI 图片测试依赖本机目录扫描而失败；改为由 Driver 提供 URI 对应原图、同时放置错误本机同名图片，保留实际字节核对后全套通过。跨语言往返测试使用 Windows 缓存路径和 Driver Fake 的独立缓存字节，不再依赖共享目录。
+- `python.exe -m ruff check tools.py tests/test_integration.py`、`python.exe -m ruff format --check tools.py tests/test_integration.py` 通过；仅格式化本次改动的集成测试文件。
+- 独立 Node 内联烟测运行编译后的 `bridge/dist` 和实际安装的固定 Driver，连接真实 `http://172.16.0.18:9222`。仅建立该 Driver 的独立 CDP 连接，不调用 `Driver.connect` 接管消息 Hook；自建 Windows 临时文件验证 786469 字节多分块文档及 1771 字节 PNG 原图保存，经真实鉴权 HTTP 上传 4 次，字节逐一相同。准确原图只提供 Windows 缓存路径、不提供 URI，另有不同缩略图；删除远端临时文件后，重开 Attachments 仍成功复用图片和文件的本地缓存。远端文件、HTTP 服务和本地隔离目录已释放。
+- 另一份独立内联烟测实际启动 `scripts/whoami.mjs`，对 `127.0.0.2` 的受控发现服务保留 `/proxy/kk9` 前缀，请求 `/proxy/kk9/json`；地址未被回环限制拒绝，无页面时明确失败，没有安装 Hook。
+
+本轮真实附件烟测是 Windows Driver → 远程 Windows KK9，不冒充 Linux → Windows 验收；Linux 桥接真机运行仍未在本轮执行。没有发送、撤回聊天消息、调用生产模型或重启服务；原生云端原图下载、接收端呈现及语音播放不因缓存文件传输通过而视为完成。姓名查人及重名选择功能不在本次适配范围。
+
+## UID 命令读取桥接配置修复
+
+用户反馈已填写远程 `cdp.url`，执行 `pnpm run whoami` 仍报 `fetch failed`。源码确认旧命令仅读取环境变量，不读取桥接配置，未设置环境变量时仍请求本机 9222；这解释了地址来源不一致，但不能据此认定用户服务器网络已连通。
+
+`scripts/whoami.mjs` 现默认读取当前目录 `config.json` 的 CDP 设置，支持 `--config <路径>`，保留环境变量优先覆盖。UID 初始化只读取 CDP 字段，不要求先填好 UID、AstrBot 地址和 token。首次默认文件尚不存在是正常初始化状态；显式文件缺失、损坏 JSON、错误字段不回退。失败时显示实际 CDP 地址，便于定位连错地址和真实网络故障。
+
+新增 CLI 行为回归直接启动真实 whoami 子进程，使用受控 HTTP 发现服务核对配置地址、路径前缀和页面匹配；页面不提供 WebSocket，确保不会安装 Hook。修复前显式配置被忽略的回归实际失败，修复后 3 项通过；`pnpm check` 构建及 42 项 Node 测试通过。独立内联烟测实际执行 `pnpm run whoami --config <临时配置>`，观察到 `/uid-smoke/json`、配置中的页面片段和失败输出中的实际地址，按预期因没有页面而停止。烟测最初 Windows shell 参数转义误把引号传入文件名，修正一次性启动方式后通过，未修改产品的路径处理。
+
+本次没有连接用户生产 KK、读取实际 UID、发送消息或重启服务，也没有重复执行用户报告的失败命令来确认故障。配置加载与命令分派已验证，用户远程服务器的网络连通性仍需从其桥接机器观察。
+
+## 0.4.0 发布准备
+
+插件元数据、Python 项目及桥接包版本统一更新为 0.4.0，README 将远程 CDP、统一附件传输和 UID 配置读取修复归入本次变更，不归入历史 0.3.0。Driver 仍固定到 `1c4223fee51296ff68aa8f18b98d406bcdd800c8`。
+
+发布复核发现 Windows 为 UID 测试发现服务分配了 6000 端口，Node `fetch` 因 `bad port` 在发出请求前拒绝，导致该项偶发失败。测试服务改为从 20000 起选择未占用高位端口，避免 fetch 保留端口；只对真实端口占用继续选择，不改产品连接实现、超时或断言。修正后 `pnpm check` 构建及 42 项 Node 测试通过。版本更新后的 Python 全套 187 项、`ruff check .` 以及 `ruff format --check .` 的 18 文件检查通过，保留既有 SQLite 实验特性与 `audioop` 弃用警告。
+
+发布前再次以真实 `pnpm run whoami --config <临时配置>` 执行隔离命令烟测，观察到配置指定的 `/uid-smoke/json`、页面片段及错误中的实际地址；无页面时按预期失败，没有连接生产 KK 或安装 Hook。此前真实 Windows → 远程 Windows 附件烟测的范围和限制不变；本次版本号及测试监听修复不扩大为 Linux 真机验收。未修改运行配置、发送数据库或生产服务。

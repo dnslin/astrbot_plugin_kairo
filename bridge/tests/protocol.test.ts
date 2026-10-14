@@ -72,10 +72,39 @@ test('结果保留原生回执与查询载荷，发送不返回success或recall'
   assert.deepEqual(serializeResult({ profile: null }), { profile: null });
 });
 
-test('配置限制 CDP 回环地址且不接受容易混淆的服务路径', () => {
+test('配置保留服务地址、凭据及桥接本地数据目录规则', () => {
   const raw = { serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '123' };
-  assert.equal(parseConfig(raw, tmpdir()).dataDir, join(tmpdir(), 'data'));
-  assert.throws(() => parseConfig({ ...raw, serverUrl: 'http://host/api' }, '/tmp'), /不含路径/);
-  assert.throws(() => parseConfig({ ...raw, cdp: { url: 'http://remote:9222' } }, '/tmp'), /回环/);
-  assert.throws(() => parseConfig({ ...raw, token: 'short' }, '/tmp'), /32/);
+  const config = parseConfig(raw, tmpdir());
+  assert.equal(config.serverUrl, raw.serverUrl);
+  assert.equal(config.dataDir, join(tmpdir(), 'data'));
+  assert.equal(config.cdp.url, 'http://127.0.0.1:9222/');
+  for (const serverUrl of ['http://host/api', 'http://user:secret@host', 'http://host?x=1', 'http://host#fragment', 'ws://host']) {
+    assert.throws(() => parseConfig({ ...raw, serverUrl }, tmpdir()), /不含路径/);
+  }
+  assert.throws(() => parseConfig({ ...raw, token: 'short' }, tmpdir()), /32/);
+});
+
+test('CDP 接受远程 HTTP(S)、IPv6、回环及反向代理路径前缀', () => {
+  const raw = { serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '123' };
+  for (const url of [
+    'http://remote:9222', 'http://172.16.0.18:9222', 'https://kk9.example.com',
+    'http://[2001:db8::18]:9222', 'http://127.0.0.1:9222', 'http://localhost:9222', 'http://[::1]:9222',
+    'https://kk9.example.com/proxy/kk9', 'https://kk9.example.com/proxy/kk9///', 'https://kk9.example.com/json-proxy',
+  ]) {
+    const config = parseConfig({ ...raw, cdp: { url, pageMatch: 'custom-renderer.html' } }, tmpdir());
+    assert.equal(config.cdp.url, new URL(url).toString());
+    assert.equal(config.cdp.pageMatch, 'custom-renderer.html');
+  }
+});
+
+test('CDP 明确拒绝错误协议、URL 凭据、查询、片段和末尾 json 发现路径', () => {
+  const raw = { serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '123' };
+  for (const url of [
+    'ws://remote:9222', 'wss://remote:9222', 'file:///tmp/cdp', 'ftp://remote:9222',
+    'http://user:secret@remote:9222', 'http://user@remote:9222', 'http://:secret@remote:9222',
+    'http://remote:9222?x=1', 'http://remote:9222?', 'http://remote:9222#fragment', 'http://remote:9222#',
+    'http://remote:9222/json', 'http://remote:9222/json/', 'https://remote/proxy/json///',
+  ]) {
+    assert.throws(() => parseConfig({ ...raw, cdp: { url } }, tmpdir()), /cdp\.url/);
+  }
 });

@@ -6,7 +6,6 @@ export interface BridgeConfig {
   token: string;
   expectedUserId: string;
   cdp: { url: string; pageMatch: string };
-  attachmentRoots: string[];
   dataDir: string;
   reconnectDelayMs: number;
   pendingEventLimit: number;
@@ -30,11 +29,9 @@ export function parseConfig(value: unknown, baseDir: string): BridgeConfig {
   if (expectedUserId.startsWith('REPLACE_')) throw new Error('expectedUserId 必须填写实际 KK9 机器人 UID');
   const cdp = (raw.cdp ?? {}) as Record<string, unknown>;
   const cdpUrl = new URL(string(cdp.url ?? 'http://127.0.0.1:9222', 'cdp.url'));
-  if (!['http:', 'https:'].includes(cdpUrl.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(cdpUrl.hostname) || cdpUrl.username || cdpUrl.password) {
-    throw new Error('cdp.url 只允许 KK9 所在电脑的回环地址');
+  if (!['http:', 'https:'].includes(cdpUrl.protocol) || cdpUrl.username || cdpUrl.password || cdpUrl.href.includes('?') || cdpUrl.href.includes('#') || /\/json\/*$/.test(cdpUrl.pathname)) {
+    throw new Error('cdp.url 必须是 HTTP/HTTPS 发现基址，不含凭据、查询参数、片段或末尾 /json；允许路径前缀');
   }
-  const roots = raw.attachmentRoots ?? [];
-  if (!Array.isArray(roots) || roots.some((item) => typeof item !== 'string' || !item.trim())) throw new Error('attachmentRoots 必须为目录路径数组');
   const integer = (name: string, fallback: number, min: number, max: number): number => {
     const value = raw[name] ?? fallback;
     if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) throw new Error(`${name} 必须是 ${min}–${max} 的整数`);
@@ -45,7 +42,6 @@ export function parseConfig(value: unknown, baseDir: string): BridgeConfig {
     token,
     expectedUserId,
     cdp: { url: cdpUrl.toString(), pageMatch: string(cdp.pageMatch ?? 'renderer.html', 'cdp.pageMatch') },
-    attachmentRoots: roots.map((item) => resolve(baseDir, item)),
     dataDir: resolve(baseDir, string(raw.dataDir ?? './data', 'dataDir')),
     reconnectDelayMs: integer('reconnectDelayMs', 3000, 100, 60_000),
     pendingEventLimit: integer('pendingEventLimit', 256, 1, 10_000),

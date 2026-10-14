@@ -130,7 +130,6 @@ async def connection(tmp_path, monkeypatch, request):
         "serverUrl": f"http://127.0.0.1:{adapter.server.bound_port}",
         "token": TOKEN,
         "expectedUserId": "100",
-        "attachmentRoots": [str(cache)],
         "dataDir": str(tmp_path / "bridge"),
         "reconnectDelayMs": 100,
     }
@@ -194,11 +193,21 @@ async def test_real_bridge_roundtrip_media_and_saved_group_route(connection):
     image_path.write_bytes(PNG)
     document = cache / "收到的文件.txt"
     document.write_text("从 KK9 上传的内容", encoding="utf-8")
+    remote_image = r"R:\KK9\收到的图片.png"
+    remote_file = r"R:\KK9\收到的文件.txt"
+    await command(
+        "cached_file", file_path=remote_image, bytes_base64=base64.b64encode(PNG).decode()
+    )
+    await command(
+        "cached_file",
+        file_path=remote_file,
+        bytes_base64=base64.b64encode(document.read_bytes()).decode(),
+    )
     original = incoming(
         content="帮我看附件",
         mentions={"isAtMe": True, "isAtAll": False, "mentionedUsers": ["100"]},
-        images=[{"filePath": str(image_path)}],
-        fileInfo={"fileName": "收到的文件.txt", "filePath": str(document)},
+        images=[{"originalFilePath": remote_image, "filePath": r"R:\KK9\缩略图.png"}],
+        fileInfo={"fileName": "收到的文件.txt", "filePath": remote_file},
     )
     await command("emit", message=original)
     event = await receive(adapter)
@@ -560,9 +569,14 @@ async def test_entire_card_is_validated_before_preceding_text_is_submitted(conne
     assert await command("calls") == []
 
 
-async def test_uri_only_cached_image_reaches_astrbot_with_original_bytes(connection):
+async def test_uri_only_image_uses_driver_resource_not_bridge_local_cache(connection):
     adapter, command, cache, _ = connection
-    (cache / "resource.png").write_bytes(PNG)
+    (cache / "resource.png").write_bytes(b"wrong-local-image")
+    await command(
+        "image_resource",
+        uri="groupc7/M00/7B/6A/resource",
+        bytes_base64=base64.b64encode(PNG).decode(),
+    )
     await command(
         "emit",
         message=incoming(

@@ -1,6 +1,6 @@
 {
   "name": "@kairo/astrbot-bridge",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.19.0",
@@ -11,11 +11,11 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "dev": "node --import tsx src/index.ts",
-    "test": "node --import tsx --test tests/attachments.test.ts tests/bridge.test.ts tests/protocol.test.ts tests/store.test.ts",
+    "test": "node --import tsx --test tests/attachments.test.ts tests/bridge.test.ts tests/protocol.test.ts tests/store.test.ts tests/whoami.test.ts",
     "check": "pnpm build && pnpm test"
   },
   "dependencies": {
-    "@kairo/driver": "file:vendor/kairo-driver-8208e78b1134",
+    "@kairo/driver": "file:vendor/kairo-driver-1c4223fee512",
     "ws": "8.19.0"
   },
   "devDependencies": {

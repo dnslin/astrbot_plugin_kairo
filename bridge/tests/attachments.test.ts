@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, truncate, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,9 +15,10 @@ test('中文长文件名按字节截断并保留扩展名', () => {
   assert.ok(name.endsWith('.pdf'));
 });
 
-test('附件必须位于真实白名单目录内，不能通过符号链接越界', async () => {
+test('上传只读取桥接自管缓存，不能通过符号链接越界', async () => {
   const root = await mkdtemp(join(tmpdir(), 'kairo-file-'));
-  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1', attachmentRoots: ['./cache'] }, root);
+  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1' }, root);
+  const cache = join(config.dataDir, 'attachments');
   let requests = 0;
   const files = new Attachments(config, (async (_url, init) => {
     requests++;
@@ -26,13 +27,13 @@ test('附件必须位于真实白名单目录内，不能通过符号链接越�
     return Response.json({ file_id: 'a'.repeat(32) });
   }) as typeof fetch);
   try {
-    await mkdir(join(root, 'cache'));
-    await writeFile(join(root, 'cache', 'ok.txt'), 'safe');
+    await mkdir(cache, { recursive: true });
+    await writeFile(join(cache, 'ok.txt'), 'safe');
     await writeFile(join(root, 'secret.txt'), 'secret');
-    await symlink(root, join(root, 'cache', 'escape'), 'junction');
-    assert.equal((await files.upload(join(root, 'cache', 'ok.txt'), 'file')).size, 4);
-    await assert.rejects(files.upload(join(root, 'secret.txt'), 'file'), /attachmentRoots/);
-    await assert.rejects(files.upload(join(root, 'cache', 'escape', 'secret.txt'), 'file'), /attachmentRoots/);
+    await symlink(root, join(cache, 'escape'), 'junction');
+    assert.equal((await files.upload(join(cache, 'ok.txt'), 'file')).size, 4);
+    await assert.rejects(files.upload(join(root, 'secret.txt'), 'file'), /桥接附件缓存/);
+    await assert.rejects(files.upload(join(cache, 'escape', 'secret.txt'), 'file'), /桥接附件缓存/);
     assert.equal(requests, 1);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -63,28 +64,31 @@ test('下载附件只请求固定服务的 file_id 并使用安全且稳定的�
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('已缓存图片与文件上传实际字节，缓存外路径保留具体失败原因', async () => {
+test('消息路径即使在桥接本地存在，也只上传 Driver 提供的实际字节', async () => {
   const root = await mkdtemp(join(tmpdir(), 'kairo-cached-inbound-'));
-  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1', attachmentRoots: ['./cache'] }, root);
+  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1' }, root);
+  const local = join(config.dataDir, 'attachments');
+  const imagePath = join(local, 'picture.png');
+  const filePath = join(local, 'document.txt');
+  const original = Buffer.from('remote original');
+  const document = Buffer.from('真实远程附件');
+  const driver = new FakeKK9Driver();
+  driver.setCachedFile(imagePath, original);
+  driver.setCachedFile(filePath, document);
   const uploads: Buffer[] = [];
   const files = new Attachments(config, (async (_url, init) => {
-    assert.ok(init?.body instanceof Uint8Array);
-    uploads.push(Buffer.from(init.body));
+    uploads.push(Buffer.from(init!.body as Uint8Array));
     return Response.json({ file_id: 'c'.repeat(32) });
   }) as typeof fetch);
   try {
-    await mkdir(join(root, 'cache'));
-    await writeFile(join(root, 'cache', 'picture.png'), Buffer.from([137, 80, 78, 71]));
-    await writeFile(join(root, 'cache', 'document.txt'), '真实附件');
-    await writeFile(join(root, 'outside.txt'), '不得读取');
-    const input: KK9Message = { id: '101', sessionId: '2', sessionName: '', sessionType: 'private', direction: 'inbound', sender: '员工', senderId: '2', content: '附件正文', time: '', isMe: false, timestamp: 1, images: [{ filePath: join(root, 'cache', 'picture.png'), width: 2 }], fileInfo: { fileName: 'document.txt', filePath: join(root, 'cache', 'document.txt') } };
-    const normalized = await files.normalize(input, new FakeKK9Driver());
-    assert.deepEqual(uploads, [Buffer.from([137, 80, 78, 71]), Buffer.from('真实附件')]);
-    assert.deepEqual(normalized.images, [{ width: 2, file_id: 'c'.repeat(32), name: 'picture.png', size: 4 }]);
-    assert.deepEqual(normalized.fileInfo, { fileName: 'document.txt', file_id: 'c'.repeat(32), name: 'document.txt', size: Buffer.byteLength('真实附件') });
-    const denied = await files.normalize({ ...input, images: [], fileInfo: { fileName: 'outside.txt', filePath: join(root, 'outside.txt') } }, new FakeKK9Driver());
-    assert.ok(denied.fileInfo && typeof denied.fileInfo === 'object' && 'attachment_error' in denied.fileInfo);
-    assert.match(String(denied.fileInfo.attachment_error), /attachmentRoots/);
+    await mkdir(local, { recursive: true });
+    await writeFile(imagePath, 'wrong local image');
+    await writeFile(filePath, 'wrong local file');
+    const input: KK9Message = { id: '101', sessionId: '2', sessionName: '', sessionType: 'private', direction: 'inbound', sender: '员工', senderId: '2', content: '附件正文', time: '', isMe: false, timestamp: 1, images: [{ filePath: imagePath, width: 2 }], fileInfo: { fileName: 'document.txt', filePath } };
+    const normalized = await files.normalize(input, driver);
+    assert.deepEqual(uploads, [original, document]);
+    assert.deepEqual(normalized.images, [{ width: 2, file_id: 'c'.repeat(32), name: 'picture.png', size: original.length }]);
+    assert.deepEqual(normalized.fileInfo, { fileName: 'document.txt', file_id: 'c'.repeat(32), name: 'document.txt', size: document.length });
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -103,83 +107,106 @@ test('voice下载持有真实音频文件并使用100MiB通道而非图片限制
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('URI 图片按资源文件名读取已有 PNG 缓存，不能误选前缀相同的其他图片', async () => {
+test('不同 URI 的同名图片与普通文件使用各自缓存，不会错传附件', async () => {
   const root = await mkdtemp(join(tmpdir(), 'kairo-uri-image-'));
-  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1', attachmentRoots: ['./image'] }, root);
-  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a+WQAAAAASUVORK5CYII=', 'base64');
+  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1' }, root);
+  const driver = new FakeKK9Driver();
+  driver.setImageResource('server/one/resource', Buffer.from('first original'));
+  driver.setImageResource('server/two/resource', Buffer.from('second original'));
+  driver.setCachedFile('server/one/resource', Buffer.from('ordinary file'));
   const uploads: Buffer[] = [];
   const files = new Attachments(config, (async (_url, init) => {
     uploads.push(Buffer.from(init!.body as Uint8Array));
     return Response.json({ file_id: 'f'.repeat(32) });
   }) as typeof fetch);
   try {
-    await mkdir(join(root, 'image'));
-    await writeFile(join(root, 'image', 'resource-other.png'), 'wrong image');
-    await writeFile(join(root, 'image', 'resource.png'), png);
-    const input = { id: '101', sessionId: '2', sessionName: '', sessionType: 'private', direction: 'inbound', sender: '员工', senderId: '2', content: '识别图片', time: '', isMe: false, timestamp: 1, images: [{ uri: 'groupc7/M00/7B/6A/resource', mimeType: 'image/png' }] } as KK9Message;
-    const result = await files.normalize(input, new FakeKK9Driver());
-    assert.deepEqual(uploads, [png]);
-    assert.deepEqual(result.images, [{ mimeType: 'image/png', file_id: 'f'.repeat(32), name: 'resource.png', size: png.length }]);
+    for (const uri of ['server/one/resource', 'server/two/resource']) {
+      await files.normalize(inboundImage([{ uri }]), driver);
+    }
+    await files.normalize({ ...inboundImage([]), fileInfo: { fileName: 'resource', filePath: 'server/one/resource' } }, driver);
+    assert.deepEqual(uploads, [Buffer.from('first original'), Buffer.from('second original'), Buffer.from('ordinary file')]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('URI 图片缓存无扩展名时读取准确资源，同名多扩展名不能任意选图', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'kairo-uri-exact-'));
-  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1', attachmentRoots: ['./image'] }, root);
-  const uploads: string[] = [];
-  const files = new Attachments(config, (async (_url, init) => {
-    uploads.push(Buffer.from(init!.body as Uint8Array).toString());
-    return Response.json({ file_id: 'f'.repeat(32) });
-  }) as typeof fetch);
+test('普通文件上传失败后重开桥接仍复用完整缓存，过期后重新保存', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'kairo-remote-file-cache-'));
+  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1' }, root);
+  const driver = new FakeKK9Driver();
+  const fileInfo = { fileName: '报告.txt', filePath: 'R:\\KK9\\报告.txt' };
+  driver.setCachedFile(fileInfo.filePath, Buffer.from('complete report'));
+  const nativeSave = driver.saveFile.bind(driver);
+  let saves = 0;
+  driver.saveFile = async (file, target) => { saves++; return nativeSave(file, target); };
+  const uploads: Buffer[] = [];
+  const fetcher = (async (_url, init) => {
+    uploads.push(Buffer.from(init!.body as Uint8Array));
+    return uploads.length === 1 ? new Response('', { status: 503 }) : Response.json({ file_id: 'f'.repeat(32) });
+  }) as typeof fetch;
+  const message = { ...inboundImage([]), fileInfo };
   try {
-    await mkdir(join(root, 'image'));
-    await writeFile(join(root, 'image', 'resource'), 'exact cached image');
-    await writeFile(join(root, 'image', 'resource.png'), 'different conversion');
-    const input = { id: '101', sessionId: '2', sessionName: '', sessionType: 'private', direction: 'inbound', sender: '员工', senderId: '2', content: '识别图片', time: '', isMe: false, timestamp: 1, images: [{ uri: 'groupc7/M00/resource' }] } as KK9Message;
-    assert.equal(((await files.normalize(input, new FakeKK9Driver())).images as Array<{name:string}>)[0]!.name, 'resource');
-    assert.deepEqual(uploads, ['exact cached image']);
-    await rm(join(root, 'image', 'resource'));
-    await writeFile(join(root, 'image', 'resource.jpg'), 'another conversion');
-    const ambiguous = await files.normalize(input, new FakeKK9Driver());
-    assert.match(String((ambiguous.images as Array<{attachment_error:string}>)[0]!.attachment_error), /多个/);
-    assert.deepEqual(uploads, ['exact cached image']);
-  } finally { await rm(root, { recursive: true, force: true }); }
-});
-
-test('URI 图片命中的缓存链接仍不能越过 attachmentRoots 读取其他文件', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'kairo-uri-link-'));
-  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1', attachmentRoots: ['./image'] }, root);
-  let uploads = 0;
-  const files = new Attachments(config, (async () => { uploads++; return Response.json({ file_id: 'f'.repeat(32) }); }) as typeof fetch);
-  try {
-    await mkdir(join(root, 'image'));
-    await symlink(root, join(root, 'image', 'resource.png'), 'junction');
-    const input = { id: '101', sessionId: '2', sessionName: '', sessionType: 'private', direction: 'inbound', sender: '员工', senderId: '2', content: '识别图片', time: '', isMe: false, timestamp: 1, images: [{ uri: 'groupc7/M00/resource' }] } as KK9Message;
-    const result = await files.normalize(input, new FakeKK9Driver());
-    const image = (result.images as Array<{attachment_error:string}>)[0]!;
-    assert.match(String(image.attachment_error), /attachmentRoots/);
-    assert.equal(uploads, 0);
+    const failed = await new Attachments(config, fetcher).normalize(message, driver);
+    assert.match(String((failed.fileInfo as Record<string, unknown>).attachment_error), /HTTP 503/);
+    const saved = await new Attachments(config, fetcher).normalize(message, driver);
+    assert.equal((saved.fileInfo as Record<string, unknown>).size, 15);
+    assert.equal(saves, 1);
+    const [id] = await readdir(join(config.dataDir, 'attachments'));
+    const old = new Date(Date.now() - 25 * 3600_000);
+    await utimes(join(config.dataDir, 'attachments', id!), old, old);
+    await new Attachments(config, fetcher).cleanup();
+    await new Attachments(config, fetcher).normalize(message, driver);
+    assert.equal(saves, 2);
+    assert.deepEqual(uploads, [Buffer.from('complete report'), Buffer.from('complete report'), Buffer.from('complete report')]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 const inboundImage = (images: NonNullable<KK9Message['images']>): KK9Message => ({ id: 'original-image', sessionId: '2', sessionName: '', sessionType: 'private', direction: 'inbound', sender: '员工', senderId: '2', content: '原图正文', time: '', isMe: false, timestamp: 1, images });
 
-test('缩略图与原图不同时仅上传原图缓存，且不泄露原图路径和 URI', async () => {
+test('Windows 原图缓存无 URI 与普通文件均由 Driver 保存到桥接本地后上传', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'kairo-remote-inbound-'));
+  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1' }, root);
+  const image = { originalFilePath: 'R:\\KK9\\原图.png', filePath: 'R:\\KK9\\缩略图.png', uri: 'server/thumb' };
+  const fileInfo = { fileName: '远程文档.txt', filePath: 'R:\\KK9\\远程文档.txt' };
+  const bytes = [Buffer.from('remote original'), Buffer.from('remote document')];
+  const uploaded: Buffer[] = [];
+  const files = new Attachments(config, (async (_url, init) => {
+    uploaded.push(Buffer.from(init!.body as Uint8Array));
+    return Response.json({ file_id: 'a'.repeat(32) });
+  }) as typeof fetch);
+  const driver = {
+    async downloadImage(received: unknown, target: string) {
+      assert.deepEqual(received, image);
+      await writeFile(target, bytes[0]!);
+      return target;
+    },
+    async saveFile(received: unknown, target: string) {
+      assert.deepEqual(received, fileInfo);
+      await writeFile(target, bytes[1]!);
+      return target;
+    },
+  };
+  try {
+    const result = await files.normalize({ ...inboundImage([image]), fileInfo }, driver);
+    assert.deepEqual(uploaded, bytes);
+    assert.deepEqual(result.images, [{ file_id: 'a'.repeat(32), name: '原图.png', size: bytes[0]!.length }]);
+    assert.deepEqual(result.fileInfo, { fileName: fileInfo.fileName, file_id: 'a'.repeat(32), name: fileInfo.fileName, size: bytes[1]!.length });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('远端原图与缩略图不同时仅上传原图，且不泄露原图路径和 URI', async () => {
   const root = await mkdtemp(join(tmpdir(), 'kairo-original-cached-'));
-  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1', attachmentRoots: ['./image'] }, root);
+  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1' }, root);
   const uploads: Buffer[] = [];
   const files = new Attachments(config, (async (_url, init) => {
     uploads.push(Buffer.from(init!.body as Uint8Array));
     return Response.json({ file_id: 'a'.repeat(32) });
   }) as typeof fetch);
   const driver = new FakeKK9Driver();
-  driver.downloadImage = async () => { throw new Error('命中缓存不应下载'); };
+  driver.setCachedFile('R:\\KK9\\thumb.png', Buffer.from('thumbnail'));
+  driver.setCachedFile('R:\\KK9\\original.png', Buffer.from('original bytes'));
+  driver.setImageResource('server/original.png', Buffer.from('original bytes'));
   try {
-    await mkdir(join(root, 'image'));
-    await writeFile(join(root, 'image', 'thumb.png'), 'thumbnail');
-    await writeFile(join(root, 'image', 'original.png'), 'original bytes');
-    for (const original of [{ originalFilePath: join(root, 'image', 'original.png'), originalUri: 'server/original' }, { originalUri: 'server/original' }]) {
-      const result = await files.normalize(inboundImage([{ filePath: join(root, 'image', 'thumb.png'), uri: 'server/thumb', ...original, width: 580 }]), driver);
+    for (const original of [{ originalFilePath: 'R:\\KK9\\original.png' }, { originalUri: 'server/original.png' }]) {
+      const result = await files.normalize(inboundImage([{ filePath: 'R:\\KK9\\thumb.png', uri: 'server/thumb', ...original, width: 580 }]), driver);
       assert.deepEqual(result.images, [{ width: 580, file_id: 'a'.repeat(32), name: 'original.png', size: 14 }]);
     }
     assert.deepEqual(uploads, [Buffer.from('original bytes'), Buffer.from('original bytes')]);
@@ -187,9 +214,9 @@ test('缩略图与原图不同时仅上传原图缓存，且不泄露原图路�
 });
 
 for (const stalePath of [false, true]) {
-  test(`原图缓存未命中原生下载并上传实际字节，过期本地路径=${stalePath}`, async () => {
+  test(`原图缓存未命中原生下载并上传实际字节，过期远端路径=${stalePath}`, async () => {
     const root = await mkdtemp(join(tmpdir(), 'kairo-original-download-'));
-    const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1', attachmentRoots: ['./image'] }, root);
+    const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1' }, root);
     const original = Buffer.from('downloaded original bytes');
     const driver = new FakeKK9Driver();
     driver.setImageResource('server/original', original);
@@ -222,7 +249,7 @@ for (const stalePath of [false, true]) {
 
 test('原生下载失败保留错误和文本，不能上传现有缩略图', async () => {
   const root = await mkdtemp(join(tmpdir(), 'kairo-original-failed-'));
-  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1', attachmentRoots: ['./image'] }, root);
+  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1' }, root);
   let uploads = 0;
   const files = new Attachments(config, (async () => { uploads++; return Response.json({ file_id: 'a'.repeat(32) }); }) as typeof fetch);
   const driver = new FakeKK9Driver();
@@ -258,33 +285,28 @@ test('原图上传失败不能触发再次下载，下一次处理复用下载�
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('缓存歧义、目录越界、非文件及仅原图路径不能靠下载或缩略图掩盖', async () => {
+test('缺失或显式空原图来源不能改用缩略图，Driver 错误逐项保留', async () => {
   const root = await mkdtemp(join(tmpdir(), 'kairo-original-boundaries-'));
-  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1', attachmentRoots: ['./image'] }, root);
+  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1' }, root);
   const driver = new FakeKK9Driver();
-  let downloads = 0, uploads = 0;
-  driver.downloadImage = async () => { downloads++; throw new Error('不能下载'); };
+  driver.setImageResource('server/thumb', Buffer.from('thumbnail'));
+  driver.setCachedFile('R:\\KK9\\thumb.png', Buffer.from('thumbnail'));
+  let uploads = 0;
   const files = new Attachments(config, (async () => { uploads++; return Response.json({ file_id: 'a'.repeat(32) }); }) as typeof fetch);
   try {
-    await mkdir(join(root, 'image'));
-    await mkdir(join(root, 'image', 'not-file'));
-    await writeFile(join(root, 'image', 'ambiguous.png'), 'one');
-    await writeFile(join(root, 'image', 'ambiguous.jpg'), 'two');
-    await writeFile(join(root, 'image', 'thumb.png'), 'thumbnail');
     const cases = [
-      { image: { originalUri: 'server/ambiguous' }, error: /多个/ },
-      { image: { originalFilePath: join(root, 'outside.png'), originalUri: 'server/original' }, error: /attachmentRoots/ },
-      { image: { originalFilePath: join(root, 'image', 'not-file'), originalUri: 'server/original' }, error: /附件为空或超过|文件/ },
-      { image: { originalFilePath: join(root, 'image', 'thumb.png', 'child'), originalUri: 'server/original' }, error: /ENOTDIR|目录|directory/i },
-      { image: { originalFilePath: join(root, 'image', 'missing.png'), uri: 'server/thumb', filePath: join(root, 'image', 'thumb.png') }, error: /原图.*URI|尚未缓存/ },
-      { image: { originalUri: '', uri: 'server/thumb', filePath: join(root, 'image', 'thumb.png') }, error: /原图.*URI/ },
-      { image: { originalFilePath: '', uri: 'server/thumb', filePath: join(root, 'image', 'thumb.png') }, error: /原图.*URI/ },
+      { originalFilePath: 'R:\\KK9\\missing.png' },
+      { originalUri: '' },
+      { originalFilePath: '' },
     ];
-    for (const { image, error } of cases) {
-      const result = await files.normalize(inboundImage([image]), driver);
-      assert.match(String((result.images as Array<{attachment_error:string}>)[0]!.attachment_error), error);
+    for (const original of cases) {
+      const result = await files.normalize(inboundImage([{ ...original, uri: 'server/thumb', filePath: 'R:\\KK9\\thumb.png' }]), driver);
+      assert.match(String((result.images as Array<{attachment_error:string}>)[0]!.attachment_error), /原图.*URI/);
     }
-    assert.equal(downloads, 0);
+    driver.downloadImage = async () => { throw new Error('远端磁盘读取失败：EACCES'); };
+    const failed = await files.normalize(inboundImage([{ originalUri: 'server/original' }]), driver);
+    assert.match(String((failed.images as Array<{attachment_error:string}>)[0]!.attachment_error), /远端磁盘读取失败：EACCES/);
+    assert.equal(failed.content, '原图正文');
     assert.equal(uploads, 0);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -324,7 +346,7 @@ test('同一消息重复原图 URI 只下载一次并分别上传，避免共用
 
 test('原图缓存目录尚未创建时仍可下载到桥接缓存', async () => {
   const root = await mkdtemp(join(tmpdir(), 'kairo-original-uninitialized-'));
-  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1', attachmentRoots: ['./not-created'] }, root);
+  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1' }, root);
   const driver = new FakeKK9Driver();
   const original = Buffer.from('original without client cache');
   driver.setImageResource('server/uninitialized', original);
@@ -404,5 +426,49 @@ test('超时原图的迟到写入不能覆盖后续成功缓存', async () => {
     const reopened = await new Attachments(config, fetcher).normalize(input, driver);
     assert.deepEqual(uploads, [original, original]);
     assert.equal((reopened.images as Array<{size:number}>)[0]!.size, original.length);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('普通文件保存失败清理半文件并保留正文，不直接读取同名本地文件', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'kairo-file-failed-'));
+  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1' }, root);
+  const driver = new FakeKK9Driver();
+  driver.saveFile = async (_file, target) => { await writeFile(target, 'partial'); throw new Error('远端文件保存失败：连接已断开'); };
+  let uploads = 0;
+  const files = new Attachments(config, (async () => { uploads++; return Response.json({ file_id: 'a'.repeat(32) }); }) as typeof fetch);
+  try {
+    const source = join(root, 'same-name.txt');
+    await writeFile(source, 'must not upload');
+    const failed = await files.normalize({ ...inboundImage([]), fileInfo: { fileName: 'same-name.txt', filePath: source } }, driver);
+    assert.equal(failed.content, '原图正文');
+    assert.match(String((failed.fileInfo as Record<string, unknown>).attachment_error), /远端文件保存失败：连接已断开/);
+    assert.equal(uploads, 0);
+    for (const id of await readdir(join(config.dataDir, 'attachments'))) {
+      assert.deepEqual(await readdir(join(config.dataDir, 'attachments', id)), []);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('保存结果路径不一致、空文件和超过100MiB的文件均不能上传或发布缓存', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'kairo-file-limits-'));
+  const config = parseConfig({ serverUrl: 'http://127.0.0.1:6190', token: 'x'.repeat(32), expectedUserId: '1' }, root);
+  const driver = new FakeKK9Driver();
+  let uploads = 0;
+  const files = new Attachments(config, (async () => { uploads++; return Response.json({ file_id: 'a'.repeat(32) }); }) as typeof fetch);
+  try {
+    for (const size of [-1, 0, 100 * 1024 * 1024 + 1]) {
+      driver.saveFile = async (_file, target) => {
+        await writeFile(target, '');
+        if (size === -1) return join(root, 'unexpected.txt');
+        await truncate(target, size);
+        return target;
+      };
+      const result = await files.normalize({ ...inboundImage([]), fileInfo: { fileName: 'limit.bin', filePath: `R:\\KK9\\${size}.bin` } }, driver);
+      assert.match(String((result.fileInfo as Record<string, unknown>).attachment_error), size === -1 ? /路径不一致/ : /100 MiB/);
+    }
+    assert.equal(uploads, 0);
+    for (const id of await readdir(join(config.dataDir, 'attachments'))) {
+      assert.deepEqual(await readdir(join(config.dataDir, 'attachments', id)), []);
+    }
   } finally { await rm(root, { recursive: true, force: true }); }
 });

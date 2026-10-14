@@ -6,7 +6,6 @@
     "url": "http://127.0.0.1:9222",
     "pageMatch": "renderer.html"
   },
-  "attachmentRoots": [],
   "dataDir": "./data",
   "reconnectDelayMs": 3000,
   "pendingEventLimit": 256,

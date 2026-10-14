@@ -96,8 +96,8 @@ Python 请求超时或断线后不重新发送，只查询一次原 `operation_i
 - `GET /files/{file_id}`：下载原始字节。
 - `GET /health`：返回 `{"version":2,"connected":true}`，`connected` 为当前桥接状态。
 
-所有接口需鉴权。`file_id` 为 32 位小写十六进制随机 ID；文件名去除路径和特殊字符，按 UTF-8 字节限制长度。Python 单文件上限 100 MiB，总缓存 1 GiB，保留 24 小时；Node 额外限制图片 20 MiB，发送附件及入站原图自管缓存默认保留 24 小时。KK9 已有本地文件仅从 `attachmentRoots` 允许的实际目录读取；原生下载图片仅写入桥接自管 `dataDir/attachments/<32hex>/<安全文件名>` 并可从该目录上传。
+所有接口需鉴权。`file_id` 为 32 位小写十六进制随机 ID；文件名去除路径和特殊字符，按 UTF-8 字节限制长度。Python 单文件上限 100 MiB，总缓存 1 GiB，保留 24 小时；Node 额外限制图片 20 MiB，发送及接收附件的桥接自管缓存默认保留 24 小时。仅从桥接本地 `dataDir/attachments/<32hex>/<安全文件名>` 上传；消息中的 KK9 缓存路径属于 KK9 机器，桥接不解析或直接读取，不再配置 `attachmentRoots`。
 
-入站图片的独立原图判定与 URI 选择共用 Driver 的 `hasOriginalImageSource/getOriginalImageUri`；原图字段显式为空也不回退缩略图。允许目录内原图不存在或仅有原图远端 URI 时，通过当前 Driver 的 `downloadImage` 调用 KK9 原生接口下载；没有原图字段的单一资源可使用 `uri`。本地路径越界、候选歧义、非 ENOENT 读取错误及上传失败不触发下载。每次下载写入独立随机 `.part` 文件，成功并检查后重命名发布到最终缓存；中断残留及超时迟到写入不参与缓存命中，也不能覆盖后续成功缓存。下载成功后按同一 URI 复用缓存并刷新保留期，下载失败不上传缩略图。内部 `normalize(message, driver)` 必须传入当前 Driver，没有无 Driver 模式。此流程不增加 WS/HTTP 接口或用户配置；普通文件未缓存时仍不自动下载，语音发送不等于完整语音接收。
+入站图片的独立原图判定与 URI 选择共用 Driver 的 `hasOriginalImageSource/getOriginalImageUri`；原图字段显式为空也不回退缩略图。所有图片都经当前 Driver 的 `downloadImage(image, localTarget)` 保存到桥接本机：Driver 优先读取 KK9 机器上的准确原图缓存，缓存不存在时才原生下载准确原图；仅有准确原图路径、没有 URI 也可保存。普通文件经 `saveFile(fileInfo, localTarget)` 保存已有 KK9 缓存，未缓存时仍不自动下载。图片按准确原图 URI 或缓存路径、文件按 KK9 缓存路径构造各自缓存键；每次保存使用独立随机 `.part` 文件，完整传输并检查大小后重命名发布，失败半文件不参与缓存命中。相同来源复用本地完整缓存并刷新保留期，上传失败不触发再次传输；失败逐项保留 `attachment_error` 和正文，不上传缩略图。`normalize(message, driver)` 必须传入具有 `downloadImage` 和 `saveFile` 的当前 Driver。此切换不改变 WS/HTTP 协议，不新增 Windows 文件服务；语音发送不等于完整语音接收。
 
-当前配套 Driver 固定到已发布 2.0.1 提交 `8208e78b1134484f8b374edb33ee2d595e624591`，保留共用原图来源规则，把标准 Node 进程代理显式传给既有 Edge TTS SDK，并在代理 CONNECT 超时时取消底层连接。准备脚本、目录依赖、两份音频补丁和锁文件同步更新，不依赖本机开发链接。用户此前已手动确认图片识别测试通过；本轮未重复调用生产模型。
+当前配套 Driver 固定到合并远程附件支持后的 main 提交 [`1c4223fee51296ff68aa8f18b98d406bcdd800c8`](https://github.com/dnslin/kairo-driver/commit/1c4223fee51296ff68aa8f18b98d406bcdd800c8)，包版本仍为 2.0.1，不能用版本号代替提交身份。发送侧 `sendImage`、`sendFile`、`sendVoice({filePath})` 仍接收桥接所在机器的文件路径，Windows 传输及临时文件由 Driver 管理；既有原生目标、发送防重与 unknown 不重发语义不变。`cdp.url` 接受可达的 HTTP/HTTPS 发现基址及路径前缀，不含凭据、查询、片段或末尾 `/json`；发现返回的 WebSocket 地址必须从桥接机器可达，Driver 不自动改写。
