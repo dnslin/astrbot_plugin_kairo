@@ -267,3 +267,5 @@ Driver main 已合入并推送提交 `db186e05a7df6b94de041a9e8f9f8787e1d9d3a6`�
 
 准备脚本继续使用标准 `pnpm pack`，随后将该gzip标记统一为255（未知系统）；不改变压缩内容、不禁用校验、不改Driver源码。真实Windows准备脚本生成的归档与同样统一标记后的真实Linux归档逐字节相等，解压内容与修复前完全相同。Windows重新准备、`pnpm install --lockfile-only --offline` 及冻结安装成功；锁文件仅更新该归档的完整性值，没有其他依赖升级。现有双平台CI的“准备+冻结安装”路径已在修复前捕获问题，继续作为跨平台回归验证。
 
+第二次CI已通过双平台冻结安装、Linux桥接及AstrBot集成检查；Windows的既有原图中断恢复测试暴露Node24.21.0/tsx工作线程继承 `--input-type=module` 后拒绝文件入口的问题。测试子进程改用隔离目录中的真实 `.mjs` 文件，不再使用 `--input-type/-e`；保留退出码17、重启后完整原图字节与大小断言，不改生产附件逻辑。该回归在本机默认Node及隔离下载的CI同版Windows Node24.21.0均通过；临时入口由既有finally清理。
+

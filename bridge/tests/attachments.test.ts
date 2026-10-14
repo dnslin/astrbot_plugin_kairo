@@ -386,7 +386,10 @@ test('原图下载进程中断后重启必须重新取得完整图片', async ()
   const driver = new FakeKK9Driver();
   driver.setImageResource('server/interrupted', original);
   try {
-    const interrupted = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', child], {
+    // 文件入口避免 --input-type=module 被 tsx 工作线程继承，仍运行真实中断子进程。
+    const childPath = join(root, 'interrupted-download.mjs');
+    await writeFile(childPath, child);
+    const interrupted = spawnSync(process.execPath, ['--import', 'tsx', childPath], {
       cwd: fileURLToPath(new URL('../', import.meta.url)), encoding: 'utf8', timeout: 15_000,
     });
     assert.equal(interrupted.status, 17, interrupted.stderr);
