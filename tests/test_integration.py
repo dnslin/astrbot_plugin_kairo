@@ -777,3 +777,38 @@ async def test_exact_name_unknown_result_never_replays_native_notification(
     assert [(call["type"], call["targetLoginName"], call["payload"]) for call in calls] == [
         ("textToUser", "E044", "可能已经发送")
     ]
+
+
+async def test_exact_name_notification_accepts_native_numeric_profile_uid(
+    connection, notification_tools
+):
+    adapter, command, _, _ = connection
+    notify, _, wrap = notification_tools
+    await command(
+        "employees",
+        employees=[
+            {
+                "id": 7783,
+                "name": "陈鹏",
+                "loginName": "e07783",
+                "updatedAt": 0,
+                "raw": {"id": 7783, "login_name": "e07783"},
+            }
+        ],
+    )
+    await command(
+        "search_employees",
+        employees=[{"id": "7783", "name": "陈鹏", "loginName": "e07783", "departmentPaths": None}],
+    )
+    body = "明天上午九点开会。"
+    await command(
+        "emit", message=incoming("numeric-profile-request", content=f"给陈鹏发消息：{body}")
+    )
+    event = await receive(adapter)
+    result = await notify.call(wrap(event), name="陈鹏", text=body)
+    assert "sent" in result
+    assert await notify.call(wrap(event), name="陈鹏", text=body) == result
+    calls = await command("calls")
+    assert [(call["type"], call["targetLoginName"], call["payload"]) for call in calls] == [
+        ("textToUser", "e07783", body)
+    ]

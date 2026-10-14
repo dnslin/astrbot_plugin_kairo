@@ -229,7 +229,7 @@ export class Bridge {
         // It must not decide an exact-employee access rule.
         const loginName = profile.raw?.login_name;
         if (typeof loginName !== 'string' || !loginName.trim()) throw new RequestError('IDENTITY_UNAVAILABLE', `原生档案缺少准确 login_name：${request.params.user_id}`);
-        return { profile: { ...profile, loginName: loginName.trim() } };
+        return { profile: { ...profile, id: String(profile.id), loginName: loginName.trim() } };
       }
       case 'send_to_user': return driver.sendTextToUser(request.params.login_name, request.params.text, { operationId: request.params.operation_id });
       case 'send': {
