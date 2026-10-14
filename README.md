@@ -266,16 +266,14 @@ if result["status"] == "unknown":
 
 新安装或升级插件后**重启 AstrBot 和桥接**。插件热重载不保证替换正在运行的平台实例。
 
-## 未发布变更
+## 0.6.0 变更记录
 
-- 修复按姓名通知将数字 UID 误判为身份缺失的问题：桥接将员工档案 UID 统一为字符串，与搜索候选一致；真实工号缺失或身份变化仍拒绝发送。更新桥接后执行 `pnpm build` 并重启桥接，无须修改管理员 ID。
-- 本次 `pnpm check` 构建及 44 项 Node 测试、Python 全套 287 项测试通过；新增数字 UID 跨语言回归修复前失败、修复后通过。编译产物、真实 WebSocket/SQLite 隔离烟测确认身份变化拒绝、同意图仅一次 Fake 发送；未向真实员工发送消息，未重启生产服务。
-- 三个卡片工具新增可选员工姓名 `name`，支持管理员跨会话推送及首次私聊；不传姓名仍发当前会话。文本与卡片共用重名选择、身份复查、动态名单及一次发送规则，不预发文本建立会话。
-- 桥接新增 `send_card_to_user`；准备脚本从固定 Driver 源码生成标准归档包。定向发送能力已合入 Driver，本插件不再维护 Driver 发送补丁。升级时先执行 `node scripts/prepare-driver.mjs`、`pnpm install --frozen-lockfile`、`pnpm build`，再重启 AstrBot 与桥接。
-- 卡片跨会话验证：构建及 62 项 Node 测试、Python 全套 321 项测试通过，Ruff 规则和格式检查通过。独立编译产物烟测通过真实 AstrBot、WebSocket 与 SQLite 验证三类卡片、重名选择、首次联系及 unknown 不重发；仅 KK9 使用 Fake，未发送真实消息或重启生产服务。
-- 新增 `kairo_send_image`、`kairo_send_file`，支持当前消息附件及管理员指定的已有本地文件；可选员工姓名 `name` 复用管理员跨会话推送、首次私聊和重名选择。附件在查人前保存快照，未知结果不重发。
-- 桥接新增 `send_media_to_user`，Driver 原生支持准确工号图片/文件发送、正式会话回执及取消时的附件清理。冻结安装成功；`pnpm check` 构建及 86 项 Node、Python 全套 357 项、Ruff 规则及 21 文件格式检查通过。独立编译产物真实 AstrBot/HTTP/WS/SQLite 烟测通过，仅 KK9 使用 Fake；未发送真实消息、重启生产服务或验收接收端呈现。
-- Driver 发送补丁已合入并推送上游 main `db186e05a7df`；插件准备脚本、归档依赖及锁文件切换到该提交，删除 `@kairo/driver` 补丁配置和文件，保留两份音频补丁。新依赖远端准备、冻结安装、桥接构建及 86 项 Node、357 项 Python 回归通过；无 Driver 补丁的编译产物 HTTP/WS/SQLite 烟测验证五类定向输出、附件字节及 unknown 防重。
+- 三个卡片工具新增可选员工姓名 `name`，支持管理员跨会话推送及首次私聊；不传姓名仍发当前会话。文本、卡片与附件共用重名候选、下一条消息编号选择、身份及动态名单复查，不预发文本建立会话。
+- 新增 `kairo_send_image`、`kairo_send_file`，支持当前消息对应类型的附件及 `attachment_index`；管理员可指定已有宿主文件 `path`。附件在查人前保存字节快照，后续选择不替换内容，保留文件名；结果未知时不重发。
+- 修复按姓名通知将数字 UID 误判为身份缺失的问题；真实工号缺失或身份变化仍拒绝发送。
+- Driver 固定到已合入定向发送的上游 main `db186e05a7df6b94de041a9e8f9f8787e1d9d3a6`。准备脚本从固定源码生成标准归档，删除插件维护的 Driver 发送补丁及配置；保留 WAV 和 Edge TTS 两份音频依赖补丁。桥接协议 v2 和现有数据不变。
+- 升级时在桥接目录依次执行 `node scripts/prepare-driver.mjs`、`pnpm install --frozen-lockfile`、`pnpm build`，然后重启 AstrBot 与桥接；保留配置、数据目录和发送记录。在人格中启用需要的卡片/附件工具及 `kairo_select_employee`，跨会话发起账号须为 AstrBot 管理员。
+- 实现阶段已完成固定源码远端准备、冻结安装、桥接构建及 86 项 Node、357 项 Python 回归。编译产物 HTTP/WS/SQLite 烟测验证五类定向输出、原始附件字节和 unknown 防重；仅 KK9 使用 Fake，真实接收端呈现和模型选择仍需人工验收，未重启生产服务或发送真实消息。
 
 ## 0.5.1 变更记录
 
