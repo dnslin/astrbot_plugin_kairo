@@ -52,8 +52,12 @@ Python 完成事件提交或名单拒绝后返回 `{"type":"ack","event_id":"...
 | `get_send_status` | `operation_id` | 原意图状态，不触发发送 |
 | `get_sessions` | `{}` | `{sessions:[...]}`，保留 `id/type/nativeType/receiverId` |
 | `get_user_profile` | `user_id` | `{profile:员工档案或null}`；工号必须来自原生 `login_name`，不能用 UID 回退值代替 |
+| `search_employees` | 非空 `keyword`，最多 256 UTF-16 单位 | `{employees:[{id,name,loginName,departmentPaths}],hasMore:false}`，完整的当前账号可见搜索结果 |
 
 `login_name` 仅去首尾空白，区分大小写。查询不要求 `operation_id`，不开放任意 IPC 或全组织同步。所有请求先核对实际登录 UID。
+
+`search_employees` 由 Driver 读完分页、按 UID 去重后才返回；失败或超时不返回部分成功，桥接不截断列表。`id` 为字符串 UID；`name`、真实 `loginName`、所有可见 `departmentPaths` 均可能为 `null`，不以 UID 或展示字段补工号。没有匹配返回空数组；单个可见结果不代表全公司唯一。该操作不创建会话、不发送、不标已读，不接受分页、发送目标或任意 IPC 参数。Driver 默认整轮期限 30 秒，Python 等待 35 秒以接收上游错误；桥接串行排队仍计入请求等待。
+
 
 | `kind` | 消息字段 | Driver 调用 |
 | --- | --- | --- |
@@ -68,7 +72,7 @@ Python 完成事件提交或名单拒绝后返回 `{"type":"ack","event_id":"...
 
 非文本消息不接受引用/提及。文件字段不接受本地路径或任意 URL；先通过附件接口传输实际字节。`mentions` 中 `uid="all"` 表示全体；正文仅在包含提及时可以为空。卡片文字字段非空、最长 128000 UTF-16 单位；额外字段被拒绝。业务卡片 `bizType=1|2`，`bizUrl` 是以 `/` 开头且非 `//` 开头的相对路径，`summary` 为字符串数组。
 
-`voice_text` 只接受 `operation_id/target_session_id/kind/text`，不接受音色、文件、路径、引用或提及；现有 `voice + file_id` 继续用于发送实际音频文件，二者不是兼容回退。Python 仅对文字语音使用 90 秒请求时限，不改变其他请求的默认 30 秒；排队时间包含在请求等待内。
+`voice_text` 只接受 `operation_id/target_session_id/kind/text`，不接受音色、文件、路径、引用或提及；现有 `voice + file_id` 继续用于发送实际音频文件，二者不是兼容回退。Python 对文字语音使用 90 秒请求时限，对人员搜索使用 35 秒；其他请求默认 30 秒不变，排队时间包含在请求等待内。
 
 ## 响应与发送意图
 
@@ -88,7 +92,10 @@ Python 请求超时或断线后不重新发送，只查询一次原 `operation_i
 
 员工和群黑白名单由 Python 公共客户端统一执行；Bridge RPC 是内部传输，不是另一个面向插件的无名单发送 API。管理员指令、事件回复和主动发送都经过该客户端。
 
-模型工具只使用真实 `KairoMessageEvent` 的原始会话与发送者，不从模型参数接收目标；非 Kairo 请求仅移除本插件工具，不修改全局启停或补回人格移除的工具。每事件、每能力的一次尝试记录只防止本事件重复调用，不替代 Driver 的持久发送记录。
+模型工具必须使用真实 `KairoMessageEvent`。四个语音/卡片工具固定使用事件原始会话与发送者；`kairo_notify_employee(name,text)`、`kairo_select_employee(choice)` 仅向真实管理员开放，不接受平台、UID、工号、会话参数。非 Kairo 请求移除本插件全部工具，非管理员 Kairo 请求额外移除通知工具；不修改全局启停或补回人格移除的工具。每事件的一次尝试不替代 Driver 的持久发送记录。
+
+姓名通知仅在一个完整搜索候选且姓名完全一致时自动发送。其余结果按序号展示真实身份和部门；下一条原生用户消息的明确数字选择必须与 `choice` 一致，不能由模型代选。候选及正文按平台实例、原生会话和发起人隔离，并绑定 UID/工号快照；新意图替换旧意图，选择后消耗，重载后清空。发送前通过 `get_user_profile` 重查 UID 和真实工号，再走共用名单的 `send_to_user`；缺失、变化或拒绝均不改投，不重新提交未知意图。原生事件高精度接收顺序拒绝同消息及候选产生前的选择，避免 Windows 宿主墙钟时间相同造成误拒绝。
+
 
 ## 附件与健康接口
 
@@ -100,4 +107,4 @@ Python 请求超时或断线后不重新发送，只查询一次原 `operation_i
 
 入站图片的独立原图判定与 URI 选择共用 Driver 的 `hasOriginalImageSource/getOriginalImageUri`；原图字段显式为空也不回退缩略图。所有图片都经当前 Driver 的 `downloadImage(image, localTarget)` 保存到桥接本机：Driver 优先读取 KK9 机器上的准确原图缓存，缓存不存在时才原生下载准确原图；仅有准确原图路径、没有 URI 也可保存。普通文件经 `saveFile(fileInfo, localTarget)` 保存已有 KK9 缓存，未缓存时仍不自动下载。图片按准确原图 URI 或缓存路径、文件按 KK9 缓存路径构造各自缓存键；每次保存使用独立随机 `.part` 文件，完整传输并检查大小后重命名发布，失败半文件不参与缓存命中。相同来源复用本地完整缓存并刷新保留期，上传失败不触发再次传输；失败逐项保留 `attachment_error` 和正文，不上传缩略图。`normalize(message, driver)` 必须传入具有 `downloadImage` 和 `saveFile` 的当前 Driver。此切换不改变 WS/HTTP 协议，不新增 Windows 文件服务；语音发送不等于完整语音接收。
 
-当前配套 Driver 固定到合并远程附件支持后的 main 提交 [`1c4223fee51296ff68aa8f18b98d406bcdd800c8`](https://github.com/dnslin/kairo-driver/commit/1c4223fee51296ff68aa8f18b98d406bcdd800c8)，包版本仍为 2.0.1，不能用版本号代替提交身份。发送侧 `sendImage`、`sendFile`、`sendVoice({filePath})` 仍接收桥接所在机器的文件路径，Windows 传输及临时文件由 Driver 管理；既有原生目标、发送防重与 unknown 不重发语义不变。`cdp.url` 接受可达的 HTTP/HTTPS 发现基址及路径前缀，不含凭据、查询、片段或末尾 `/json`；发现返回的 WebSocket 地址必须从桥接机器可达，Driver 不自动改写。
+当前配套 Driver 固定到合并人员搜索支持后的 main 提交 [`29e95f622a3aef1e5fbe266381431041803ef8b9`](https://github.com/dnslin/kairo-driver/commit/29e95f622a3aef1e5fbe266381431041803ef8b9)，包版本仍为 2.0.1，不能用版本号代替提交身份。发送侧 `sendImage`、`sendFile`、`sendVoice({filePath})` 仍接收桥接所在机器的文件路径，Windows 传输及临时文件由 Driver 管理；既有原生目标、发送防重与 unknown 不重发语义不变。`cdp.url` 接受可达的 HTTP/HTTPS 发现基址及路径前缀，不含凭据、查询、片段或末尾 `/json`；发现返回的 WebSocket 地址必须从桥接机器可达，Driver 不自动改写。

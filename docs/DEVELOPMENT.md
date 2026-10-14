@@ -8,8 +8,9 @@
 - `policy.py`：每个平台实例共用员工/群规则，判定时读取当前配置。
 - `client.py`：事件回复、主动发送、媒体、卡片和工号通知的共用入口，不向外暴露原始 RPC。
 - `adapter.py` / `event.py`：宿主注册、生命周期、事件提交和回复目标。
-- `main.py`：插件工具注册、非 Kairo 请求筛选及 ADMIN 通知命令；通知正文保留空格和换行。
+- `main.py`：插件工具注册、请求级平台/管理员筛选及 ADMIN 工号通知命令；命令正文保留空格和换行。
 - `tools.py`：当前真实 Kairo 事件的语音和三类卡片工具、普通文字到固定卡片字段、一次尝试及原生结果处理。
+- `notifications.py`：管理员姓名通知、原生消息编号选择、按实例/会话/员工隔离的 UID 候选及原始正文、跨事件确认和一次发送尝试。
 - `transport.py` / `bridge/src`：协议 v2、WebSocket、鉴权文件传输、Driver 分派及持久发送记录。
 
 不建立旧协议、旧界面会话 ID 或旧发送补丁兼容层。用户已确认无需旧数据迁移；现存运行目录不由准备脚本自动删除。
@@ -17,10 +18,10 @@
 ## 依赖来源
 
 - AstrBot 验证基线：`v4.29.0-beta.1`，元数据约束 `>=4.29.0b1,<5`。该基线不是稳定版承诺。
-- Driver 固定提交：`1c4223fee51296ff68aa8f18b98d406bcdd800c8`，为合并远程附件支持后的 main；包版本仍为 2.0.1，不等同于旧 `v2.0.1` 发布提交。源码获取、目录依赖与音频补丁保持一致。
+- Driver 固定提交：`29e95f622a3aef1e5fbe266381431041803ef8b9`，为合并完整人员搜索及远程附件支持后的 main；包版本仍为 2.0.1，不等同于旧 `v2.0.1` 发布提交。源码获取、目录依赖与音频补丁保持一致。
 - Python 3.12+、Node.js 22.13+（推荐 24）、pnpm 11.19.0。
 
-Python 插件只声明 `aiohttp`，AstrBot API 与工具 schema 校验依赖由宿主提供。Driver 尚未发布 npm；准备脚本固定检出、按上游锁文件安装并构建，通过 `file:vendor/kairo-driver-1c4223fee512` 目录依赖消费。保留并同步上游两份音频依赖补丁，不再应用 `driver-native-send.patch`。更新固定提交时同步准备脚本、依赖目录名、补丁和锁文件；远程附件来自已合并的 [Driver PR #17](https://github.com/dnslin/kairo-driver/pull/17)，保留 PR #15 的原图规则和 PR #16 的文字 TTS 代理及 CONNECT 超时释放修复。
+Python 插件只声明 `aiohttp`，AstrBot API 与工具 schema 校验依赖由宿主提供。Driver 尚未发布 npm；准备脚本固定检出、按上游锁文件安装并构建，通过 `file:vendor/kairo-driver-29e95f622a3a` 目录依赖消费。保留并同步上游两份音频依赖补丁，不再应用 `driver-native-send.patch`。更新固定提交时同步准备脚本、依赖目录名、补丁和锁文件；完整搜索来自已合并的 [Driver PR #18](https://github.com/dnslin/kairo-driver/pull/18)，继续包含 PR #17 的远程附件、PR #15 的原图规则和 PR #16 的文字 TTS 代理及 CONNECT 超时释放修复。
 
 准备过程先在独立临时目录检出，完成后才发布最终目录；中断可重试。已有最终目录若提交不符或跟踪文件修改则明确报错，不覆盖修改。不使用本机 tarball 作为跨系统锁文件输入。
 
@@ -86,13 +87,15 @@ CI 的 Node 检查覆盖 Windows/Linux，集成任务引用 `v4.29.0-beta.1`。0
 调用方从 `context.get_platform_inst(platform_id).get_client()` 获取 `KairoClient`：
 
 - `notify_employee(login_name, text, operation_id=None) -> dict`：准确工号首次/已有私聊文本通知，返回原生 `sent/failed/unknown`、`operationId`，成功带正式 `sessionId`；调用错误抛 `BridgeError`。
+- `search_employees(keyword) -> dict`：只读返回完整 `{employees,hasMore:false}`；身份字段可空，Driver 负责分页与 UID 去重，Python 拒绝无效或不完整响应，不推断唯一。等待 35 秒，不改变全局默认时限。
+- `notify_employee_uid(user_id, login_name, text, operation_id=None) -> dict`：以搜索快照中的 UID/准确工号重查真实档案；缺失或变化抛 `BridgeError`，匹配后复用 `notify_employee` 的名单及发送意图处理。保留工号大小写和前导零；该 API 不代替模型工具的管理员检查。
 - `send_voice_text(target_session_id, text, sender_id=None, operation_id=None) -> dict`：当前准确原生目标的文字语音，复查名单后交给 Driver 合成，返回含 `operationId` 的原生结果；单请求等待 90 秒，不调用宿主 TTS。
 - `send_card(target_session_id, card, sender_id=None, operation_id=None) -> dict`：一张 `kairo.app/kairo.url/kairo.biz` Json 字典卡片，复用完整卡片预检和名单；返回含 `operationId` 的原生结果，调用方可提前保存 ID 并在等待取消后只查询同一意图。
 - `get_send_status(operation_id) -> dict`：只查询已存在意图，不再次发送。
 - `get_sessions() -> list[dict]`：只读原生会话，用于准确路由和群名单配置。
 - `send_chain(target_session_id, message, sender_id=None) -> None`：顺序发送支持的组件，失败或未知抛含 `result` 的 `BridgeError`；事件回复保留原群发送者作名单复查。
 
-管理员命令为 `/kairo notify <平台实例ID> <准确工号> <正文>`，不开放额外 HTTP 通知接口。四个按需模型工具不提供工号通知或跨会话发送；三类 Json 结构、工具使用及网络前提见主说明，内部字段见 [协议 v2](PROTOCOL.md)。
+管理员命令为 `/kairo notify <平台实例ID> <准确工号> <正文>`，不开放额外 HTTP 通知接口。四个原按需模型工具仍只发当前会话；新增两个管理员通知工具在当前 Kairo 实例内查人和选择后发文本私聊，不允许模型指定实例、会话、UID 或工号。通讯超时/断线且未确认成功的 Python 发送结果额外保留 `code`，不重发。工具使用及网络前提见主说明，内部字段见 [协议 v2](PROTOCOL.md)。
 
 ## API 依据
 
@@ -101,7 +104,7 @@ CI 的 Node 检查覆盖 Windows/Linux，集成任务引用 `v4.29.0-beta.1`。0
 - [AstrBot 平台注册源码](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.0-beta.1/astrbot/core/platform/register.py)
 - [AstrBot 平台生命周期源码](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.0-beta.1/astrbot/core/platform/platform.py)
 - [AstrBot 消息模型源码](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.0-beta.1/astrbot/core/platform/astrbot_message.py)
-- [Driver 公开接口](https://github.com/dnslin/kairo-driver/blob/1c4223fee51296ff68aa8f18b98d406bcdd800c8/src/types/index.ts)
+- [Driver 公开接口](https://github.com/dnslin/kairo-driver/blob/29e95f622a3aef1e5fbe266381431041803ef8b9/src/types/index.ts)
 - [aiohttp WebSocket 与文件响应](https://docs.aiohttp.org/en/stable/web_reference.html)
 
 官方平台教程部分示例仍采用旧构造参数，实现以验证基线源码为准。规划时调查记录保留在 [plan.md](../tasks/plan.md)，其中旧版问题是调查快照，不是当前实现说明。
@@ -194,3 +197,23 @@ Git HTTPS直连推送两次不可达，读取现有Windows系统代理后使用�
 发布复核发现 Windows 为 UID 测试发现服务分配了 6000 端口，Node `fetch` 因 `bad port` 在发出请求前拒绝，导致该项偶发失败。测试服务改为从 20000 起选择未占用高位端口，避免 fetch 保留端口；只对真实端口占用继续选择，不改产品连接实现、超时或断言。修正后 `pnpm check` 构建及 42 项 Node 测试通过。版本更新后的 Python 全套 187 项、`ruff check .` 以及 `ruff format --check .` 的 18 文件检查通过，保留既有 SQLite 实验特性与 `audioop` 弃用警告。
 
 发布前再次以真实 `pnpm run whoami --config <临时配置>` 执行隔离命令烟测，观察到配置指定的 `/uid-smoke/json`、页面片段及错误中的实际地址；无页面时按预期失败，没有连接生产 KK 或安装 Hook。此前真实 Windows → 远程 Windows 附件烟测的范围和限制不变；本次版本号及测试监听修复不扩大为 Linux 真机验收。未修改运行配置、发送数据库或生产服务。
+
+## 管理员按姓名通知接入（0.5.0）
+
+用户确认仅管理员可用。固定 Driver 升级到 `29e95f622a3aef1e5fbe266381431041803ef8b9`，两份音频补丁与上游一致；准备脚本以本机源码来源完成固定检出及冻结安装，桥接锁文件同步并完成冻结安装。不改 Edge TTS 协议，不宣称修复现存语音 403。
+
+新增只读 `search_employees` 和两个真实 FunctionTool，沿用 `Context.add_llm_tools` 归属与启停方式。请求级移除无权限工具，执行时再次检查原生事件及管理员角色；发起员工、原群和接收员工复查当前名单。只对单个完全匹配姓名自动发；其余列出全部候选并等待下一条真实编号消息，保存 UID/工号快照和首次正文，不接受模型指定路由。身份变化、缺少工号、不明确选择均不改投。
+
+候选及最新意图按平台实例、原生会话和发起人隔离；新通知替换旧通知，旧在途搜索不能覆盖新候选或恢复已完成意图，选择后先消耗状态再等待发送。原生事件增加高精度 `received_at_ns`，候选使用同一高精度时钟；不依赖可被改写的上下文 ID 或低精度宿主墙钟判断选择顺序。内存候选不跨重载保存，不新增数据库、锁或配置框架；发送仍使用原有 SQLite 意图记录。
+
+### 本轮验证
+
+- `pnpm check`：TypeScript 构建及 44 项 Node 测试通过，无跳过；只读搜索通过真实 JSON WebSocket 保留 503 个候选、可空身份和全部部门路径，原生错误直接返回，没有发送副作用。
+- 设置 `ASTRBOT_SOURCE=D:/Person/AstrBot`，用 AstrBot 虚拟环境执行 `python.exe -m pytest -q --tb=short`：286 项通过，无跳过；保留宿主 `audioop` 弃用警告。覆盖权限、姓名准确/模糊/重名、缺失身份、当前名单、编号与原生消息一致、状态隔离、重排仍绑定原 UID/正文、旧在途查询、并发/取消/未知不重发。
+- 首轮回归因 Windows `created_at` 与候选完成墙钟值相同，误拒绝合法下一条消息，并令等待发送门闩的用例挂起。诊断输出确认两值相等后改为高精度接收顺序；新增确定性同墙钟回归，94 项通知专项通过，测试控制门闩也有明确等待界限。未放宽同消息或过期选择检查。
+- `python.exe -m ruff check .`、`python.exe -m ruff format --check .`：通过，20 个 Python 文件格式符合要求。仅格式化本次修改文件。
+- 独立 Python/Node 内联烟测使用实际安装的固定 Driver、`bridge/dist`、真实 AstrBot 事件/工具、WebSocket 和 SQLite，仅 KK9 使用 Fake：两位同名员工及多部门展示；非管理员拒绝；选择后按 `e0044`（保留大小写/前导零）发送首次正文一次；名单变化拒绝；`unknown` 重复调用不重发。仅 2 次 Fake 原生调用，数据库持久状态为 `sent`、`unknown`；进程、服务、数据库句柄及临时文件已清理。首次烟测的只读 SQLite 核查仅结束事务、未关闭句柄，Windows 拒绝删除临时文件；修正一次性脚本显式关闭并清理原目录后，完整烟测退出 0。产品发送 Store 无需修改。
+- 独立进程内临时移除非管理员门禁，权限回归按预期失败；恢复后进程退出，未修改持久源码。证明测试能够捕获非管理员搜索泄露，而不只是检查工具注册。
+
+以上为实现阶段验证记录；该阶段没有发布、提交或推送。后续按用户要求发布 `0.5.0`、创建 `v0.5.0`，发布阶段不重复测试。没有重启现有 AstrBot/桥接、修改运行配置或向真实员工发送消息。真实模型是否正确提取姓名/正文、展示候选、调用选择工具及真实接收端通知仍待授权人工验收；本次不扩大原 T14 的通过范围。
+

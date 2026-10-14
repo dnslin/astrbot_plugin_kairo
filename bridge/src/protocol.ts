@@ -1,4 +1,4 @@
-import type { KK9AppMsgOptions, KK9BizMsgOptions, KK9Employee, KK9Session, KK9UrlCardOptions, SendResult } from '@kairo/driver';
+import type { KK9AppMsgOptions, KK9BizMsgOptions, KK9Employee, KK9EmployeeSearchResult, KK9Session, KK9UrlCardOptions, SendResult } from '@kairo/driver';
 
 export class RequestError extends Error {
   constructor(public readonly code: string, message: string) { super(message); }
@@ -19,8 +19,9 @@ export type BridgeRequest =
   | Request<'send_to_user', { operation_id: string; login_name: string; text: string }>
   | Request<'get_send_status', { operation_id: string }>
   | Request<'get_sessions', Record<string, never>>
-  | Request<'get_user_profile', { user_id: string }>;
-export type BridgeResult = SendResult | { sessions: KK9Session[] } | { profile: KK9Employee | null };
+  | Request<'get_user_profile', { user_id: string }>
+  | Request<'search_employees', { keyword: string }>;
+export type BridgeResult = SendResult | { sessions: KK9Session[] } | { profile: KK9Employee | null } | KK9EmployeeSearchResult;
 
 function object(value: unknown, name: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new RequestError('INVALID_REQUEST', `${name}无效`);
@@ -51,7 +52,11 @@ export function parseRequest(value: unknown): BridgeRequest {
     fields(params, ['user_id'], 'params');
     return { type: 'request', id, action: raw.action, params: { user_id: text(params.user_id, 'user_id') } };
   }
-  if (!['send', 'send_to_user', 'get_send_status'].includes(String(raw.action))) throw new RequestError('UNSUPPORTED_ACTION', '仅支持 send、send_to_user、get_send_status、get_sessions 和 get_user_profile');
+  if (raw.action === 'search_employees') {
+    fields(params, ['keyword'], 'params');
+    return { type: 'request', id, action: raw.action, params: { keyword: text(params.keyword, 'keyword') } };
+  }
+  if (!['send', 'send_to_user', 'get_send_status'].includes(String(raw.action))) throw new RequestError('UNSUPPORTED_ACTION', '仅支持 send、send_to_user、get_send_status、get_sessions、get_user_profile 和 search_employees');
   const operation_id = text(params.operation_id, 'operation_id');
   if (raw.action === 'get_send_status') {
     fields(params, ['operation_id'], 'params');
@@ -129,6 +134,7 @@ export function parseRequest(value: unknown): BridgeRequest {
 export function serializeResult(result: BridgeResult): Record<string, unknown> {
   if ('sessions' in result) return { sessions: result.sessions };
   if ('profile' in result) return { profile: result.profile };
+  if ('employees' in result) return { employees: result.employees, hasMore: result.hasMore };
   const { operationId, status, messageId, sessionId, error, nativeCode, receipt, isPreTrigger, verifyLatencyMs } = result;
   return { operationId, status, messageId, sessionId, error, nativeCode, receipt, isPreTrigger, verifyLatencyMs };
 }

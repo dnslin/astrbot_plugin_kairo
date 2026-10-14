@@ -68,11 +68,13 @@ class KairoClient:
         if not operation_id:
             raise ValueError("operation_id 不能为空")
         params = {**params, "operation_id": operation_id}
+        request_error: str | None = None
         try:
             result = await self._server.request(action, params, timeout=timeout)
         except BridgeError as exc:
             if exc.code not in {"TIMEOUT", "CONNECTION_LOST"}:
                 raise
+            request_error = exc.code
             result = {"status": "unknown", "operationId": operation_id, "error": str(exc)}
         if result["status"] == "unknown":
             try:
@@ -84,7 +86,83 @@ class KairoClient:
                     **result,
                     "error": f"{result.get('error') or '发送结果未知'}；状态查询失败 [{exc.code}]：{exc}",
                 }
+        if request_error is not None and result.get("status") != "sent" and not result.get("code"):
+            result = {**result, "code": request_error}
         return {**result, "operationId": operation_id}
+
+    async def search_employees(self, keyword: str) -> dict:
+        """Read the Driver's complete, UID-deduplicated employee search result.
+
+        Partial or malformed responses cannot establish a unique recipient and are
+        rejected in full. Driver owns pagination; this call never retries or truncates.
+        """
+        keyword = keyword.strip()
+        if not keyword:
+            raise ValueError("员工搜索姓名不能为空")
+        result = await self._server.request("search_employees", {"keyword": keyword}, timeout=35)
+        if (
+            not isinstance(result, dict)
+            or result.get("hasMore") is not False
+            or not isinstance(result.get("employees"), list)
+        ):
+            raise BridgeError("INVALID_RESPONSE", "员工搜索未返回完整的候选列表")
+        seen: set[str] = set()
+        for employee in result["employees"]:
+            if not isinstance(employee, dict) or not {
+                "id",
+                "name",
+                "loginName",
+                "departmentPaths",
+            }.issubset(employee):
+                raise BridgeError("INVALID_RESPONSE", "员工搜索候选缺少必要身份字段")
+            uid = employee["id"]
+            if not isinstance(uid, str) or not uid.strip() or uid in seen:
+                raise BridgeError("INVALID_RESPONSE", "员工搜索候选 UID 无效或重复")
+            for field in ("name", "loginName"):
+                if employee[field] is not None and not isinstance(employee[field], str):
+                    raise BridgeError("INVALID_RESPONSE", f"员工搜索候选 {field} 类型无效")
+            paths = employee["departmentPaths"]
+            if paths is not None and (
+                not isinstance(paths, list) or any(not isinstance(path, str) for path in paths)
+            ):
+                raise BridgeError("INVALID_RESPONSE", "员工搜索候选部门路径类型无效")
+            seen.add(uid)
+        return result
+
+    async def notify_employee_uid(
+        self,
+        user_id: str,
+        login_name: str,
+        text: str,
+        *,
+        operation_id: str | None = None,
+    ) -> dict:
+        """Recheck the selected UID and exact login snapshot, then use the policy send path.
+
+        A changed or missing identity is not a reason to guess another login or UID.
+        The bridge supplies the real raw login, never the Driver's display fallback.
+        """
+        if not user_id.strip() or not login_name.strip():
+            raise BridgeError("IDENTITY_UNAVAILABLE", "所选员工缺少 UID 或准确工号")
+        response = await self._server.request("get_user_profile", {"user_id": user_id})
+        if not isinstance(response, dict) or "profile" not in response:
+            raise BridgeError("INVALID_RESPONSE", "员工档案响应无效")
+        profile = response["profile"]
+        if profile is None:
+            raise BridgeError("IDENTITY_UNAVAILABLE", f"无法取得员工 {user_id} 的档案")
+        if not isinstance(profile, dict):
+            raise BridgeError("INVALID_RESPONSE", "员工档案类型无效")
+        uid, login = profile.get("id"), profile.get("loginName")
+        if (
+            not isinstance(uid, str)
+            or not uid.strip()
+            or not isinstance(login, str)
+            or not login.strip()
+        ):
+            raise BridgeError("IDENTITY_UNAVAILABLE", f"员工 {user_id} 缺少真实 UID 或准确工号")
+        if uid != user_id or login != login_name:
+            raise BridgeError("IDENTITY_CHANGED", "所选员工 UID 或准确工号已变化，请重新查询")
+        return await self.notify_employee(login_name, text, operation_id=operation_id)
 
     async def notify_employee(
         self, login_name: str, text: str, *, operation_id: str | None = None

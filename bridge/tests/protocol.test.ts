@@ -49,6 +49,22 @@ test('查询无须发送operation_id，工号trim但保留大小写', () => {
   assert.throws(() => parseRequest({ type: 'request', id: 'n', action: 'send_to_user', params: { operation_id: 'o', login_name: 'x', text: 'hello', mentions: [] } }), /不支持/);
 });
 
+test('员工搜索只接受非空 keyword，不接受分页、身份或发送参数', () => {
+  const search = { type: 'request', id: 'search', action: 'search_employees', params: { keyword: '  张三  ' } };
+  assert.deepEqual(parseRequest(search), search);
+  for (const keyword of [undefined, null, '', '  ', '\r\n', 123, true, {}, [], 'a'.repeat(257)]) {
+    assert.throws(() => parseRequest({ ...search, params: { keyword } }), { code: 'INVALID_REQUEST' });
+  }
+  for (const extra of [
+    { operation_id: 'send-intent' }, { page: 1 }, { pageSize: 10 }, { limit: 10 },
+    { user_id: '2' }, { login_name: 'AbC' }, { target_session_id: '8' }, { text: '通知' }, { timeoutMs: 0 },
+  ]) {
+    assert.throws(() => parseRequest({ ...search, params: { ...search.params, ...extra } }), { code: 'INVALID_REQUEST' });
+  }
+  for (const params of [null, [], '张三']) assert.throws(() => parseRequest({ ...search, params }), { code: 'INVALID_REQUEST' });
+  assert.throws(() => parseRequest({ ...search, action: 'search_employee' }), { code: 'UNSUPPORTED_ACTION' });
+});
+
 test('三类原生卡片保留准确Driver字段且拒绝额外或错误字段', () => {
   const cards = [
     { kind: 'app_card', card: { title: '通知', content: '<p>内容</p>', linkUrl: '/app', pcAppCode: 'real-app' } },

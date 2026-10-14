@@ -9,6 +9,7 @@ import shutil
 import uuid
 import wave
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -16,9 +17,14 @@ import pytest_asyncio
 from astrbot.api.event import MessageChain
 from astrbot.api.message_components import At, File, Image, Json, Plain, Record, Reply
 from astrbot.api.platform import MessageType
+from astrbot.api.star import Context
+from astrbot.core.agent.run_context import ContextWrapper
+from astrbot.core.astr_agent_context import AstrAgentContext
 from astrbot.core.platform.message_session import MessageSession
+from astrbot.core.provider.func_tool_manager import FunctionToolManager
 from astrbot.core.utils.metrics import Metric
 from astrbot_plugin_kairo.adapter import KairoPlatformAdapter
+from astrbot_plugin_kairo.main import KairoPlugin
 from astrbot_plugin_kairo.transport import BridgeError
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -662,3 +668,112 @@ async def test_uri_only_uncached_image_downloads_original_over_real_http(connect
     image = next(component for component in event.get_messages() if isinstance(component, Image))
     assert Path(await image.convert_to_file_path()).read_bytes() == PNG
     assert await command("calls") == []
+
+
+@pytest.fixture
+def notification_tools():
+    context = Context.__new__(Context)
+    context.platform_manager = SimpleNamespace(platform_insts=[])
+    context.provider_manager = SimpleNamespace(llm_tools=FunctionToolManager())
+    KairoPlugin(context)
+    registered = {tool.name: tool for tool in context.provider_manager.llm_tools.func_list}
+
+    def wrap(event):
+        event.role = "admin"
+        return ContextWrapper(AstrAgentContext(context=context, event=event))
+
+    return registered["kairo_notify_employee"], registered["kairo_select_employee"], wrap
+
+
+async def test_name_notification_requires_user_choice_and_binds_original_uid_and_body(
+    connection, notification_tools
+):
+    adapter, command, _, _ = connection
+    notify, select, wrap = notification_tools
+    candidates = [
+        {"id": "42", "name": "张三", "loginName": "E042", "departmentPaths": ["公司 / 研发"]},
+        {
+            "id": "44",
+            "name": "张三",
+            "loginName": "E044",
+            "departmentPaths": ["公司 / 财务", "公司 / 项目组"],
+        },
+    ]
+    await command("search_employees", employees=candidates)
+    body = "通知正文  保留空格\n以及换行"
+    await command("emit", message=incoming("name-request", content="给张三发一条通知"))
+    request_event = await receive(adapter)
+    listing = await notify.call(wrap(request_event), name="张三", text=body)
+    assert "E042" in listing and "E044" in listing
+    assert "公司 / 研发" in listing and "公司 / 财务" in listing and "公司 / 项目组" in listing
+    assert await command("calls") == []
+
+    # 模型不能在搜索的同一条用户消息中自行决定重名对象。
+    await select.call(wrap(request_event), choice=2)
+    await command("emit", message=incoming("other-actor-choice", senderId="43", content="2"))
+    await select.call(wrap(await receive(adapter)), choice=2)
+    assert await command("calls") == []
+
+    # 搜索源排序变化不能改变已展示的序号到 UID 映射。
+    await command("search_employees", employees=list(reversed(candidates)))
+    await command("emit", message=incoming("name-choice", content="选第2个"))
+    choice_event = await receive(adapter)
+    choice_event.session_id = "rewritten-context"
+    choice_event.unified_msg_origin = "other:GroupMessage:99999"
+    result = await select.call(wrap(choice_event), choice=2)
+    assert "sent" in result and "operationId=" in result
+    assert await select.call(wrap(choice_event), choice=2) == result
+    calls = await command("calls")
+    assert [(call["type"], call["targetLoginName"], call["payload"]) for call in calls] == [
+        ("textToUser", "E044", body)
+    ]
+
+
+async def test_name_notification_rechecks_policy_after_candidates_are_shown(
+    connection, notification_tools
+):
+    adapter, command, _, config = connection
+    notify, select, wrap = notification_tools
+    # 单个模糊结果也不能自动发出。
+    await command(
+        "search_employees",
+        employees=[
+            {"id": "44", "name": "未联系员工", "loginName": "E044", "departmentPaths": None}
+        ],
+    )
+    await command("emit", message=incoming("fuzzy-request", content="给未联系的人发通知"))
+    listing = await notify.call(wrap(await receive(adapter)), name="未联系", text="不得发出")
+    assert "E044" in listing
+    assert await command("calls") == []
+    config["user_blacklist"] = ["E044"]
+    await command("emit", message=incoming("blocked-choice", content="选择1"))
+    result = await select.call(wrap(await receive(adapter)), choice=1)
+    assert "ACCESS_DENIED" in result
+    assert await command("calls") == []
+
+
+async def test_exact_name_unknown_result_never_replays_native_notification(
+    connection, notification_tools
+):
+    adapter, command, _, _ = connection
+    notify, _, wrap = notification_tools
+    await command(
+        "search_employees",
+        employees=[
+            {"id": "44", "name": "未联系员工", "loginName": "E044", "departmentPaths": None}
+        ],
+    )
+    await command("behavior", behavior={"mode": "post_trigger_timeout"})
+    await command("emit", message=incoming("exact-name-request", content="给未联系员工发通知"))
+    event = await receive(adapter)
+    first, duplicate = await asyncio.gather(
+        notify.call(wrap(event), name="未联系员工", text="可能已经发送"),
+        notify.call(wrap(event), name="未联系员工", text="可能已经发送"),
+    )
+    assert first == duplicate and "unknown" in first
+    assert "operationId=" in first
+    assert await notify.call(wrap(event), name="未联系员工", text="可能已经发送") == first
+    calls = await command("calls")
+    assert [(call["type"], call["targetLoginName"], call["payload"]) for call in calls] == [
+        ("textToUser", "E044", "可能已经发送")
+    ]

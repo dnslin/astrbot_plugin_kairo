@@ -1,5 +1,6 @@
 from collections.abc import AsyncGenerator
 from copy import deepcopy
+from time import perf_counter_ns
 from typing import TYPE_CHECKING
 
 from astrbot.api.event import AstrMessageEvent, MessageChain
@@ -23,6 +24,8 @@ class KairoMessageEvent(AstrMessageEvent):
             message_obj.session_id,
         )
         self.adapter = adapter
+        # Windows 的宿主 created_at 可能相同；选择确认使用高精度接收顺序。
+        self.received_at_ns = perf_counter_ns()
         # 上下文会话可能被隔离或被其他插件改写；回复目标始终来自原始消息。
         self.target_session_id = str(message_obj.raw_message["sessionId"])
         self.sender_id = str(message_obj.sender.user_id)

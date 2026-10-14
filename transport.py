@@ -258,6 +258,7 @@ class BridgeServer:
             "get_send_status",
             "get_sessions",
             "get_user_profile",
+            "search_employees",
         }:
             raise BridgeError("INVALID_ACTION", "不支持的桥接操作")
         ws = self._ws

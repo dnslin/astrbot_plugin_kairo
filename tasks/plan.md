@@ -265,3 +265,15 @@ Driver 代理回归使用本地真实 CONNECT 拒绝服务器，不访问外网�
 
 实现以本地 AstrBot `4.29.0-beta.1` 源码的 FunctionTool、Context.add_llm_tools、FunctionToolExecutor 和 ToolLoopAgentRunner 为验证基线；不修改宿主枚举、核心执行器或内置 send_message_to_user。
 
+## 9. 管理员按姓名通知（已确认并实施）
+
+用户确认自然语言主动通知仅管理员可用，并要求继续实现插件侧。依赖固定为 Driver `29e95f622a3aef1e5fbe266381431041803ef8b9`；上游负责全分页可见人员搜索、UID 去重及真实姓名/工号/部门路径，插件不重做分页、不将结果称为全公司唯一。
+
+桥接只新增 `search_employees(keyword)` 只读动作。Python `search_employees` 校验完整结果并等待 35 秒；`notify_employee_uid` 发送前重查 UID/工号快照，再走原 `notify_employee` 名单与意图路径，不新增发送协议或兼容层。
+
+`kairo_notify_employee(name,text)` 仅在单个完全匹配姓名时直接发文本，否则保存完整正文及候选序号到 UID 的映射，展示姓名/真实工号/全部部门路径。`kairo_select_employee(choice)` 只接受下一条原生用户消息中一致的明确数字选择，不接受模型给出的目标或正文；同消息、旧消息和跨范围选择不执行。缺工号、无匹配、身份变化、名单拒绝均不猜人。
+
+候选及最新意图按平台实例、原生会话、发起人隔离；新通知覆盖旧意图，旧在途搜索不能恢复状态，选择先消耗再等待。高精度原生事件接收时间避免 Windows 宿主墙钟相同误拒绝下一条消息。权限在请求集合及实际执行两处检查，发起员工/群与接收员工动态名单均沿用公共客户端；重复、并发、取消及未知结果不重新提交。
+
+已执行 TypeScript 构建、44 项 Node、286 项 Python、Ruff 静态/20 文件格式检查；独立编译产物真实 WS/SQLite 烟测验证完整流程，仅 KK9 使用 Fake。真实模型自然语言提取、候选展示与选择、真实接收端通知仍需授权人工验收，不自动向生产联系人发消息、不重启服务、不扩大原 T14 范围。命令与失败诊断见开发说明。
+

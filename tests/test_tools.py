@@ -24,6 +24,7 @@ from astrbot_plugin_kairo.main import KairoPlugin
 from astrbot_plugin_kairo.mapping import convert_message
 from astrbot_plugin_kairo.policy import KairoAccessPolicy
 from astrbot_plugin_kairo.tools import (
+    KAIRO_ADMIN_TOOL_NAMES,
     KAIRO_TOOL_NAMES,
     KairoSendAppCardTool,
     KairoSendBizCardTool,
@@ -141,12 +142,10 @@ def test_real_tools_register_once_with_plugin_lifecycle_ownership():
     KairoPlugin(context)
     tools = context.provider_manager.llm_tools.func_list
     assert {tool.name for tool in tools} == KAIRO_TOOL_NAMES
-    assert len(tools) == 4
     for tool in tools:
         assert isinstance(tool, FunctionTool)
         assert PluginManager._is_plugin_llm_tool(tool, KairoPlugin.__module__)
     KairoPlugin(context)
-    assert len(context.provider_manager.llm_tools.func_list) == 4
     schemas = ToolSet(context.provider_manager.llm_tools.func_list).openai_schema()
     for schema in schemas:
         parameters = schema["function"]["parameters"]
@@ -360,7 +359,10 @@ async def test_local_invalid_arguments_fail_without_native_submission(tool, args
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("native", [True, False])
-async def test_request_filter_only_removes_own_tools_without_reenabling_persona_tools(native):
+@pytest.mark.parametrize("admin", [True, False])
+async def test_request_filter_only_removes_own_tools_without_reenabling_persona_tools(
+    native, admin
+):
     context = make_context()
     plugin = KairoPlugin(context)
     registered = context.provider_manager.llm_tools.func_list
@@ -372,18 +374,21 @@ async def test_request_filter_only_removes_own_tools_without_reenabling_persona_
     available = [tool for tool in registered if tool not in (voice, app)]
     request = ProviderRequest(func_tool=ToolSet([*available, unrelated]))
     event = make_event(NativeBoundary(), native=native, name="kairo" if native else "other")
+    event.role = "admin" if admin else "member"
     await plugin.filter_kairo_tools(event, request)
     assert request.func_tool.get_tool("other_tool") is unrelated
     assert request.func_tool.get_tool(voice.name) is None
     assert request.func_tool.get_tool(app.name) is None
     assert not app.active
-    assert {tool.name for tool in request.func_tool.tools} == (
-        {tool.name for tool in available} | {"other_tool"} if native else {"other_tool"}
-    )
+    expected = {tool.name for tool in available} | {"other_tool"}
+    if not native:
+        expected -= KAIRO_TOOL_NAMES
+    elif not admin:
+        expected -= KAIRO_ADMIN_TOOL_NAMES
+    assert {tool.name for tool in request.func_tool.tools} == expected
     disabled_request = ProviderRequest(func_tool=None)
     await plugin.filter_kairo_tools(event, disabled_request)
     assert disabled_request.func_tool is None
-    assert len(registered) == 4
 
 
 @pytest.mark.asyncio

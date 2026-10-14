@@ -3,7 +3,9 @@ from astrbot.api.star import Context, Star
 from astrbot.core.provider.entities import ProviderRequest
 from astrbot.core.star.filter.command import GreedyStr
 
+from .notifications import KairoNotifications, KairoNotifyEmployeeTool, KairoSelectEmployeeTool
 from .tools import (
+    KAIRO_ADMIN_TOOL_NAMES,
     KAIRO_TOOL_NAMES,
     KairoSendAppCardTool,
     KairoSendBizCardTool,
@@ -21,11 +23,14 @@ class KairoPlugin(Star):
         super().__init__(context)
         from .adapter import KairoPlatformAdapter  # noqa: F401
 
+        notifications = KairoNotifications()
         tools = (
             KairoSendVoiceTool(),
             KairoSendAppCardTool(),
             KairoSendUrlCardTool(),
             KairoSendBizCardTool(),
+            KairoNotifyEmployeeTool(notifications),
+            KairoSelectEmployeeTool(notifications),
         )
         for tool in tools:
             # Context 按 __module__ 标记工具归属，保持启停/重载与主插件一致。
@@ -34,10 +39,16 @@ class KairoPlugin(Star):
 
     @filter.on_llm_request()
     async def filter_kairo_tools(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
-        """只移除不适用工具，不补回人格或用户已移除的工具。"""
-        if req.func_tool is None or is_kairo_event(event):
+        """只移除不适用或无权限的工具，不补回人格或用户已移除的工具。"""
+        if req.func_tool is None:
             return
-        for name in KAIRO_TOOL_NAMES:
+        if not is_kairo_event(event):
+            excluded = KAIRO_TOOL_NAMES
+        elif not event.is_admin():
+            excluded = KAIRO_ADMIN_TOOL_NAMES
+        else:
+            return
+        for name in excluded:
             req.func_tool.remove_tool(name)
 
     @filter.permission_type(filter.PermissionType.ADMIN)

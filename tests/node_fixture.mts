@@ -18,6 +18,7 @@ const drivers = [];
 let driver;
 let sessions = [];
 let employees = [];
+let searchEmployees = [];
 let messages = [];
 const imageResources = new Map();
 const cachedFiles = new Map();
@@ -26,6 +27,7 @@ const bridge = new Bridge(config, () => {
   driver.setCurrentUserId(config.expectedUserId);
   driver.setSessions(structuredClone(sessions));
   driver.setEmployees(structuredClone(employees));
+  driver.setSearchEmployees(structuredClone(searchEmployees));
   driver.setMessages(structuredClone(messages));
   for (const [uri, bytes] of imageResources) driver.setImageResource(uri, bytes);
   for (const [path, bytes] of cachedFiles) driver.setCachedFile(path, bytes);
@@ -63,6 +65,10 @@ try {
     } else if (command.cmd === 'employees') {
       employees = command.employees;
       driver.setEmployees(structuredClone(employees));
+      result = true;
+    } else if (command.cmd === 'search_employees') {
+      searchEmployees = command.employees;
+      driver.setSearchEmployees(structuredClone(searchEmployees));
       result = true;
     } else if (command.cmd === 'calls') {
       result = await Promise.all(drivers.flatMap((item) => item.recordedCalls).map(async (call) => ({

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import { WebSocketServer, WebSocket } from 'ws';
-import { FakeKK9Driver, type KK9Message, type SendOutcome, InMemorySendOperationStore } from '@kairo/driver';
+import { FakeKK9Driver, type KK9EmployeeSearchItem, type KK9EmployeeSearchResult, type KK9Message, type SendOutcome, InMemorySendOperationStore } from '@kairo/driver';
 import { Bridge } from '../src/bridge.js';
 import { parseConfig } from '../src/config.js';
 
@@ -353,6 +353,71 @@ test('文本语音无附件 HTTP 依赖，原生结果及既有发送记录防�
     for (const socket of server.clients) socket.terminate();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await new Promise<void>((resolve) => http.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('员工搜索通过真实 JSON WebSocket 完整返回候选，不回退身份、不发送且保留原生错误', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'kairo-employee-search-'));
+  const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+  await new Promise<void>((resolve) => server.once('listening', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const config = parseConfig({ serverUrl: `http://127.0.0.1:${address.port}`, token: 'x'.repeat(32), expectedUserId: '1', reconnectDelayMs: 100 }, root);
+  const driver = new FakeKK9Driver();
+  driver.setCurrentUserId('1');
+  driver.setEmployees([{ id: '999', loginName: 'organization-only', name: '张三', updatedAt: 1 }]);
+  const employees: KK9EmployeeSearchItem[] = [
+    { id: '2', name: '张三', loginName: 'AbC', departmentPaths: ['总公司/研发部/平台组', '总公司/项目组'] },
+    { id: '3', name: '张三', loginName: null, departmentPaths: null },
+    { id: '4', name: null, loginName: '张三-login', departmentPaths: ['总公司/人事部'] },
+    ...Array.from({ length: 500 }, (_, index) => ({ id: String(index + 10), name: `张三-${index}`, loginName: `Employee-${index}`, departmentPaths: [`总公司/部门-${index}`] })),
+  ];
+  driver.setSearchEmployees(employees);
+  driver.getUserProfile = async () => { throw new Error('搜索不应另查展示档案'); };
+  driver.getSessions = async () => { throw new Error('搜索不应操作会话'); };
+  const responses = new Map<string, any>();
+  let peer: WebSocket | undefined, ready = false;
+  server.on('connection', (socket) => {
+    peer = socket;
+    socket.on('message', (raw) => {
+      const value = JSON.parse(raw.toString());
+      if (value.type === 'hello') socket.send(JSON.stringify({ type: 'ready', version: 2 }));
+      else if (value.type === 'response') responses.set(value.id, value);
+    });
+  });
+  const bridge = new Bridge(config, () => driver, (_level, text) => { if (text.startsWith('AstrBot 桥接已连接')) ready = true; });
+  const running = bridge.run();
+  let counter = 0;
+  const rpc = async (params: Record<string, unknown>) => {
+    const id = `search-rpc-${++counter}`;
+    peer!.send(JSON.stringify({ type: 'request', id, action: 'search_employees', params }));
+    await until(() => responses.has(id));
+    return responses.get(id);
+  };
+  try {
+    await until(() => ready);
+    const found = await rpc({ keyword: '  张三  ' });
+    assert.equal(found.ok, true);
+    assert.deepEqual(found.result, { employees, hasMore: false });
+    for (const params of [{ keyword: '' }, { keyword: '张三', operation_id: 'must-not-send' }, { keyword: '张三', page: 1 }]) {
+      assert.equal((await rpc(params)).error.code, 'INVALID_REQUEST');
+    }
+    driver.setSearchEmployees([]);
+    assert.deepEqual((await rpc({ keyword: '  张三  ' })).result, { employees: [], hasMore: false });
+    for (const code of ['IPC_QUERY_FAILED', 'IPC_INVALID_RESPONSE']) {
+      driver.searchEmployees = async () => { throw Object.assign(new Error(`原生搜索失败 (${code})`), { code }); };
+      assert.deepEqual(await rpc({ keyword: '张三' }), { type: 'response', id: `search-rpc-${counter}`, ok: false, error: { code, message: `原生搜索失败 (${code})` } });
+    }
+    driver.searchEmployees = async () => { throw new Error('搜索连接中断'); };
+    const disconnected = await rpc({ keyword: '张三' });
+    assert.equal(disconnected.ok, false);
+    assert.deepEqual(disconnected.error, { code: 'BRIDGE_ERROR', message: '搜索连接中断' });
+    assert.equal(driver.recordedCalls.length, 0);
+  } finally {
+    bridge.stop(); await running;
+    for (const socket of server.clients) socket.terminate();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(root, { recursive: true, force: true });
   }
 });

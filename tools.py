@@ -1,4 +1,4 @@
-"""只在当前 Kairo 事件中按用户明确要求发送的模型工具。"""
+"""当前 Kairo 事件的模型工具及请求级权限分组。"""
 
 import asyncio
 from html import escape
@@ -12,8 +12,12 @@ from jsonschema import ValidationError, validate
 from .event import KairoMessageEvent
 from .transport import BridgeError
 
-KAIRO_TOOL_NAMES = frozenset(
-    {"kairo_send_voice", "kairo_send_app_card", "kairo_send_url_card", "kairo_send_biz_card"}
+KAIRO_ADMIN_TOOL_NAMES = frozenset({"kairo_notify_employee", "kairo_select_employee"})
+KAIRO_TOOL_NAMES = (
+    frozenset(
+        {"kairo_send_voice", "kairo_send_app_card", "kairo_send_url_card", "kairo_send_biz_card"}
+    )
+    | KAIRO_ADMIN_TOOL_NAMES
 )
 _ATTEMPTS_KEY = "astrbot_plugin_kairo.tool_attempts"
 _TEXT = {"type": "string", "minLength": 1}
