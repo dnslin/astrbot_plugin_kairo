@@ -206,7 +206,7 @@ packages:
     resolution: {integrity: sha512-WxXiHFmD9u/owrzempiDlBB1ZYqiLnm9s6aPc8AlFQalq2tKmqdmMr9GXOupDgzXtqnBipj8Un0gkIm7Sjf8mw==}
 
   '@kairo/driver@file:vendor/kairo-driver-db186e05a7df.tgz':
-    resolution: {integrity: sha512-xC+fJVy+hJCHRj+y/KOc6oh0+sSaQqD1WUNs7C+yxLw9K+ryIZTrMa1op3F5N9JD75c3shZtOAz9+cKjxMEwHg==, tarball: file:vendor/kairo-driver-db186e05a7df.tgz}
+    resolution: {integrity: sha512-wjkFG57zkNcrexNLWF2mDNtuZlwexWWUyEj/aOxmFFWSiN3fuBvgCMd6ZqQZc1wMXzCcAldTW0zyVAMcms/m6w==, tarball: file:vendor/kairo-driver-db186e05a7df.tgz}
     version: 2.0.1
     engines: {node: '>=22.13.0'}
 

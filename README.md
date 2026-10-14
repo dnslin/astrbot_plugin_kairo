@@ -272,6 +272,7 @@ if result["status"] == "unknown":
 - 新增 `kairo_send_image`、`kairo_send_file`，支持当前消息对应类型的附件及 `attachment_index`；管理员可指定已有宿主文件 `path`。附件在查人前保存字节快照，后续选择不替换内容，保留文件名；结果未知时不重发。
 - 修复按姓名通知将数字 UID 误判为身份缺失的问题；真实工号缺失或身份变化仍拒绝发送。
 - Driver 固定到已合入定向发送的上游 main `db186e05a7df6b94de041a9e8f9f8787e1d9d3a6`。准备脚本从固定源码生成标准归档，删除插件维护的 Driver 发送补丁及配置；保留 WAV 和 Edge TTS 两份音频依赖补丁。桥接协议 v2 和现有数据不变。
+- 修复 Driver 归档的 gzip 系统标记随 Windows/Linux 变化而导致冻结安装校验失败的问题；统一该标记，不改源码或编译内容，保留归档完整性校验。
 - 升级时在桥接目录依次执行 `node scripts/prepare-driver.mjs`、`pnpm install --frozen-lockfile`、`pnpm build`，然后重启 AstrBot 与桥接；保留配置、数据目录和发送记录。在人格中启用需要的卡片/附件工具及 `kairo_select_employee`，跨会话发起账号须为 AstrBot 管理员。
 - 实现阶段已完成固定源码远端准备、冻结安装、桥接构建及 86 项 Node、357 项 Python 回归。编译产物 HTTP/WS/SQLite 烟测验证五类定向输出、原始附件字节和 unknown 防重；仅 KK9 使用 Fake，真实接收端呈现和模型选择仍需人工验收，未重启生产服务或发送真实消息。
 

@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -48,6 +48,12 @@ for (const name of ['@audio__decode-wav@1.5.0.patch', 'node-edge-tts@1.2.11.patc
 }
 run(pnpm, ['install', '--frozen-lockfile'], source);
 // 从标准包归档安装源码及编译产物，不依赖开发目录或 checkout 硬链接。
-// pack 的 prepack 已执行 build，且 pnpm 固定归档时间戳，避免重复编译和不稳定的包身份。
-run(pnpm, ['pack', '--out', '../kairo-driver-db186e05a7df.tgz'], source);
+// pack 的 prepack 已执行 build，pnpm 固定归档时间戳；gzip 的 OS 字节另行统一。
+const archive = '../kairo-driver-db186e05a7df.tgz';
+run(pnpm, ['pack', '--out', archive], source);
+// gzip 第10字节仅标识构建系统，Windows/Linux 分别为10/3；统一为255（未知），不改压缩内容。
+const archivePath = resolve(source, archive);
+const packed = readFileSync(archivePath);
+packed[9] = 255;
+writeFileSync(archivePath, packed);
 console.log(`Driver ${revision} 已准备完成（vendor/kairo-driver-db186e05a7df.tgz）；继续运行 pnpm install --frozen-lockfile。`);

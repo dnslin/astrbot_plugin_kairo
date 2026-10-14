@@ -261,3 +261,9 @@ Driver main 已合入并推送提交 `db186e05a7df6b94de041a9e8f9f8787e1d9d3a6`�
 
 无 Driver 补丁的新安装实际执行 `pnpm check`（桥接构建及86项Node通过）、AstrBot虚拟环境 `python.exe -m pytest -q --tb=short`（357项通过，保留已有audioop警告）。独立 `node artifacts/tmp/upstream-driver-smoke.mjs` 运行编译桥接、真实鉴权HTTP/WS和SQLite：三类卡片、68字节PNG及524307字节原名文件定向首次/已有私聊成功，相同操作ID不重发，改变接收工号冲突，unknown文件重放/查询不重发，持久状态5项sent及1项unknown，仅6次Fake原生提交。没有连接真实KK9、发送真实消息或重启生产服务；一次性脚本和隔离数据完成后删除。
 
+## 0.6.0 发布前跨平台归档修复
+
+发布准备提交 `e416d8e` 的 CI 中 Windows 通过，而 Linux 桥接和集成任务在冻结安装时报告 `ERR_PNPM_TARBALL_INTEGRITY`。在隔离 WSL Debian 中，用 Node 24.21.0、pnpm 11.19.0、同一固定源码及 TypeScript 5.9.3 编译打包，精确重现 Linux CI 的归档 SHA-512。Windows/Linux 两包的129项内容、顺序及解压后的1007616字节tar完全一致；唯一差异为gzip头第10字节的OS标记，Windows为10、Linux为3，不是源码或编译结果不同。
+
+准备脚本继续使用标准 `pnpm pack`，随后将该gzip标记统一为255（未知系统）；不改变压缩内容、不禁用校验、不改Driver源码。真实Windows准备脚本生成的归档与同样统一标记后的真实Linux归档逐字节相等，解压内容与修复前完全相同。Windows重新准备、`pnpm install --lockfile-only --offline` 及冻结安装成功；锁文件仅更新该归档的完整性值，没有其他依赖升级。现有双平台CI的“准备+冻结安装”路径已在修复前捕获问题，继续作为跨平台回归验证。
+
