@@ -1,8 +1,7 @@
 diff --git a/dist/edge-tts.js b/dist/edge-tts.js
-index 0a65dfeaaede0eae806f32b2ec277a2a21e75eff..37f51c756e2d8a52baf8aa8ba57c1390c94fdb30 100644
 --- a/dist/edge-tts.js
 +++ b/dist/edge-tts.js
-@@ -18,6 +18,71 @@ function escapeXml(unsafe) {
+@@ -18,6 +18,71 @@
          }
      });
  }
@@ -74,15 +73,15 @@ index 0a65dfeaaede0eae806f32b2ec277a2a21e75eff..37f51c756e2d8a52baf8aa8ba57c1390
  class EdgeTTS {
      constructor({ voice = 'zh-CN-XiaoyiNeural', lang = 'zh-CN', outputFormat = 'audio-24khz-48kbitrate-mono-mp3', saveSubtitles = false, proxy, rate = 'default', pitch = 'default', volume = 'default', timeout = 10000 } = {}) {
          this.voice = voice;
-@@ -31,6 +96,7 @@ class EdgeTTS {
+@@ -31,6 +96,7 @@
          this.timeout = timeout;
      }
      async _connectWebSocket() {
 +        const proxyAbort = this.proxy ? new AbortController() : undefined;
-         const wsConnect = new ws_1.WebSocket(`wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=${drm_1.TRUSTED_CLIENT_TOKEN}&Sec-MS-GEC=${(0, drm_1.generateSecMsGecToken)()}&Sec-MS-GEC-Version=1-${drm_1.CHROMIUM_FULL_VERSION}`, {
-             host: 'speech.platform.bing.com',
+         const wsConnect = new ws_1.WebSocket(`wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1?Ocp-Apim-Subscription-Key=${drm_1.TRUSTED_CLIENT_TOKEN}&Sec-MS-GEC=${(0, drm_1.generateSecMsGecToken)()}&Sec-MS-GEC-Version=1-${drm_1.CHROMIUM_FULL_VERSION}`, {
              origin: 'chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold',
-@@ -41,11 +107,34 @@ class EdgeTTS {
+             headers: {
+@@ -40,11 +106,34 @@
                  'Accept-Encoding': 'gzip, deflate, br, zstd',
                  'Accept-Language': 'en-US,en;q=0.9'
              },
@@ -120,7 +119,7 @@ index 0a65dfeaaede0eae806f32b2ec277a2a21e75eff..37f51c756e2d8a52baf8aa8ba57c1390
            {
              "context": {
                "synthesis": {
-@@ -59,12 +148,27 @@ class EdgeTTS {
+@@ -58,12 +147,27 @@
                }
              }
            }
@@ -154,7 +153,7 @@ index 0a65dfeaaede0eae806f32b2ec277a2a21e75eff..37f51c756e2d8a52baf8aa8ba57c1390
          });
      }
      _saveSubFile(subFile, text, audioPath) {
-@@ -92,30 +196,89 @@ class EdgeTTS {
+@@ -91,30 +195,89 @@
          (0, node_fs_1.writeFileSync)(subPath, JSON.stringify(subFile, null, '  '), { encoding: 'utf-8' });
      }
      async ttsPromise(text, audioPath) {
@@ -256,8 +255,8 @@ index 0a65dfeaaede0eae806f32b2ec277a2a21e75eff..37f51c756e2d8a52baf8aa8ba57c1390
 +                        finalize(undefined, true);
                      }
                      else if (message.includes('Path:audio.metadata')) {
-                         let splitTexts = message.split('\r\n');
-@@ -132,16 +295,32 @@ class EdgeTTS {
+                         try {
+@@ -130,16 +293,32 @@
                          catch { }
                      }
                  }
@@ -292,4 +291,4 @@ index 0a65dfeaaede0eae806f32b2ec277a2a21e75eff..37f51c756e2d8a52baf8aa8ba57c1390
 +            }
          });
      }
- }
+     /**

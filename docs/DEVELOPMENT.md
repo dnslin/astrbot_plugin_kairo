@@ -18,10 +18,10 @@
 ## 依赖来源
 
 - AstrBot 验证基线：`v4.29.0-beta.1`，元数据约束 `>=4.29.0b1,<5`。该基线不是稳定版承诺。
-- Driver 固定提交：`29e95f622a3aef1e5fbe266381431041803ef8b9`，为合并完整人员搜索及远程附件支持后的 main；包版本仍为 2.0.1，不等同于旧 `v2.0.1` 发布提交。源码获取、目录依赖与音频补丁保持一致。
+- Driver 固定提交：`c4c9c677fa8fe3bfa5c4d2ab94505f1b5918efaf`，含 Edge SDK 1.2.11 及其资源清理补丁、完整人员搜索和远程附件；包版本仍为 2.0.1，不等同于旧 `v2.0.1` 发布提交。源码获取、目录依赖与音频补丁保持一致。
 - Python 3.12+、Node.js 22.13+（推荐 24）、pnpm 11.19.0。
 
-Python 插件只声明 `aiohttp`，AstrBot API 与工具 schema 校验依赖由宿主提供。Driver 尚未发布 npm；准备脚本固定检出、按上游锁文件安装并构建，通过 `file:vendor/kairo-driver-29e95f622a3a` 目录依赖消费。保留并同步上游两份音频依赖补丁，不再应用 `driver-native-send.patch`。更新固定提交时同步准备脚本、依赖目录名、补丁和锁文件；完整搜索来自已合并的 [Driver PR #18](https://github.com/dnslin/kairo-driver/pull/18)，继续包含 PR #17 的远程附件、PR #15 的原图规则和 PR #16 的文字 TTS 代理及 CONNECT 超时释放修复。
+Python 插件只声明 `aiohttp`，AstrBot API 与工具 schema 校验依赖由宿主提供。Driver 尚未发布 npm；准备脚本固定检出、按上游锁文件安装并构建，通过 `file:vendor/kairo-driver-c4c9c677fa8f` 目录依赖消费。桥接同步上游 WAV 解码补丁及 `node-edge-tts@1.2.11.patch`，将 SDK override 锁定 1.2.11；不再使用 1.2.10 补丁或旧 `driver-native-send.patch`。更新固定提交时同步准备脚本、依赖目录名、补丁、override 和锁文件。保留 [Driver PR #18](https://github.com/dnslin/kairo-driver/pull/18) 的完整搜索、PR #17 的远程附件以及既有原图、代理和 CONNECT 超时清理行为。
 
 准备过程先在独立临时目录检出，完成后才发布最终目录；中断可重试。已有最终目录若提交不符或跟踪文件修改则明确报错，不覆盖修改。不使用本机 tarball 作为跨系统锁文件输入。
 
@@ -104,7 +104,7 @@ CI 的 Node 检查覆盖 Windows/Linux，集成任务引用 `v4.29.0-beta.1`。0
 - [AstrBot 平台注册源码](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.0-beta.1/astrbot/core/platform/register.py)
 - [AstrBot 平台生命周期源码](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.0-beta.1/astrbot/core/platform/platform.py)
 - [AstrBot 消息模型源码](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.0-beta.1/astrbot/core/platform/astrbot_message.py)
-- [Driver 公开接口](https://github.com/dnslin/kairo-driver/blob/29e95f622a3aef1e5fbe266381431041803ef8b9/src/types/index.ts)
+- [Driver 公开接口](https://github.com/dnslin/kairo-driver/blob/c4c9c677fa8fe3bfa5c4d2ab94505f1b5918efaf/src/types/index.ts)
 - [aiohttp WebSocket 与文件响应](https://docs.aiohttp.org/en/stable/web_reference.html)
 
 官方平台教程部分示例仍采用旧构造参数，实现以验证基线源码为准。规划时调查记录保留在 [plan.md](../tasks/plan.md)，其中旧版问题是调查快照，不是当前实现说明。
@@ -216,4 +216,13 @@ Git HTTPS直连推送两次不可达，读取现有Windows系统代理后使用�
 - 独立进程内临时移除非管理员门禁，权限回归按预期失败；恢复后进程退出，未修改持久源码。证明测试能够捕获非管理员搜索泄露，而不只是检查工具注册。
 
 以上为实现阶段验证记录；该阶段没有发布、提交或推送。后续按用户要求发布 `0.5.0`、创建 `v0.5.0`，发布阶段不重复测试。没有重启现有 AstrBot/桥接、修改运行配置或向真实员工发送消息。真实模型是否正确提取姓名/正文、展示候选、调用选择工具及真实接收端通知仍待授权人工验收；本次不扩大原 T14 的通过范围。
+
+
+## Edge SDK 与补丁同步（0.5.1）
+
+Driver main `c4c9c677fa8fe3bfa5c4d2ab94505f1b5918efaf` 仅更换 SDK 依赖与补丁，不改 `sendVoice`、公开类型或 Driver 语音调用实现。插件原有 override 会把 SDK 强制压回 1.2.10，且准备脚本查找已被上游删除的旧补丁文件，因此本次一起更新固定提交/目录、工作区补丁和强制版本、补丁核对列表及锁文件。新补丁与固定远端源码核对通过，旧补丁直接删除；WAV 补丁不变，不加兼容路径、重试或新代理配置。
+
+实际执行 `node scripts/prepare-driver.mjs`（远端固定检出）、`pnpm install --lockfile-only --offline`、`pnpm install --frozen-lockfile`，全部成功。锁文件仅变更固定 Driver 目录、SDK 版本/完整性及补丁标识，无其他传递依赖升级。`pnpm check` 构建及44项Node测试通过；设置 `ASTRBOT_SOURCE` 后，AstrBot虚拟环境 `python.exe -m pytest -q --tb=short` 全套286项通过，保留已有audioop弃用警告。Python代码和协议未变，本次未重复Ruff检查，也未运行上游Driver全套；上游README记录其全套受既有人员搜索定时器断言阻断，不将该记录声称为本次修复或通过。
+
+独立Node内联烟测从桥接实际安装的固定Driver解析到带补丁的 `node-edge-tts@1.2.11`，显式使用本机既有 `http://127.0.0.1:7897` 进程代理合成“您好，这是一条语音合成验证。”，获得19296字节MP3。通过同一Driver依赖的解码器得到24000Hz、2声道、3.216秒、RMS 0.1167773的有限采样音频；耗时1478毫秒，退出0，临时音频清理成功。这是本插件安装产物的真实服务验证，不仅依赖上游声明。没有连接CDP、安装Hook、调用聊天IPC、发送消息或重启生产服务；不冒充KK AMR编码、真实接收端播放或Linux真机验收。
 

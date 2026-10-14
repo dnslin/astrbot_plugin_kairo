@@ -5,9 +5,9 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const revision = '29e95f622a3aef1e5fbe266381431041803ef8b9';
+const revision = 'c4c9c677fa8fe3bfa5c4d2ab94505f1b5918efaf';
 // 新目录避免覆盖旧版本 vendor 中已经应用的补丁或用户修改。
-const source = resolve(root, 'vendor', 'kairo-driver-29e95f622a3a');
+const source = resolve(root, 'vendor', 'kairo-driver-c4c9c677fa8f');
 const repository = process.env.KAIRO_DRIVER_SOURCE || 'https://github.com/dnslin/kairo-driver.git';
 const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
 
@@ -42,7 +42,7 @@ const head = run('git', ['rev-parse', 'HEAD'], source, 'Driver 提交身份核�
 if (head !== revision) throw new Error(`Driver 提交身份核对失败：需要 ${revision}，实际 ${head}；请保留该目录并另行处理，不会覆盖源码`);
 const dirty = run('git', ['status', '--porcelain', '--untracked-files=no'], source, '无法读取 Driver 工作目录状态', true);
 if (dirty) throw new Error(`Driver 工作目录存在跟踪文件修改，不会覆盖：\n${dirty}`);
-for (const name of ['@audio__decode-wav@1.5.0.patch', 'node-edge-tts@1.2.10.patch']) {
+for (const name of ['@audio__decode-wav@1.5.0.patch', 'node-edge-tts@1.2.11.patch']) {
   const digest = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
   if (digest(resolve(root, 'patches', name)) !== digest(resolve(source, 'patches', name))) throw new Error(`Driver 音频补丁不一致：${name}`);
 }
