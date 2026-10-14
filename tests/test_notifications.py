@@ -18,6 +18,11 @@ from astrbot_plugin_kairo.notifications import (
     KairoSelectEmployeeTool,
 )
 from astrbot_plugin_kairo.policy import KairoAccessPolicy
+from astrbot_plugin_kairo.tools import (
+    KairoSendAppCardTool,
+    KairoSendBizCardTool,
+    KairoSendUrlCardTool,
+)
 from astrbot_plugin_kairo.transport import BridgeError
 
 
@@ -75,7 +80,9 @@ class NativeBoundary:
                 "error": "native acknowledgement missing",
                 "nativeCode": 408,
             }
-        assert action == "send_to_user", f"unexpected native action: {action}"
+        assert action in {"send_to_user", "send_card_to_user"}, (
+            f"unexpected native action: {action}"
+        )
         self.sends.append(dict(params))
         self.started.set()
         await self.release.wait()
@@ -757,3 +764,163 @@ async def test_slow_older_actor_policy_lookup_cannot_resurrect_completed_newer_i
     boundary.actor_release.set()
     await older
     assert [item["text"] for item in boundary.sends] == ["新正文"]
+
+
+CARD_CASES = [
+    (
+        KairoSendAppCardTool,
+        {"title": "公告", "text": "<正文>\r\n下一行", "linkUrl": "https://example.org"},
+        "app_card",
+        {"title": "公告", "content": "&lt;正文&gt;<br>下一行", "linkUrl": "https://example.org"},
+    ),
+    (
+        KairoSendUrlCardTool,
+        {
+            "title": "链接",
+            "summary": "<摘要>",
+            "linkUrl": "https://example.org",
+            "picUrl": "/p.png",
+        },
+        "url_card",
+        {
+            "title": "链接",
+            "summary": "<摘要>",
+            "linkUrl": "https://example.org",
+            "picUrl": "/p.png",
+        },
+    ),
+    (
+        KairoSendBizCardTool,
+        {
+            "title": "日程",
+            "text": "原始正文",
+            "bizType": 2,
+            "bizUrl": "/schedule/42",
+            "summary": ["甲", "乙"],
+        },
+        "biz_card",
+        {
+            "title": "日程",
+            "content": "原始正文",
+            "bizType": 2,
+            "bizUrl": "/schedule/42",
+            "summary": ["甲", "乙"],
+        },
+    ),
+]
+
+
+@pytest.mark.parametrize("tool_type,args,kind,card", CARD_CASES)
+async def test_directed_card_exact_name_preserves_card_and_never_posts_to_source(
+    tool_type, args, kind, card
+):
+    boundary = NativeBoundary()
+    manager = KairoNotifications()
+    tool = tool_type(manager)
+    event = make_event(boundary)
+    event.session_id = "rewritten-context"
+    result = await tool.call(wrap(event), name="张三", **args)
+    assert "sent" in result and "sessionId=98765" in result
+    assert len(boundary.sends) == 1
+    assert {key: value for key, value in boundary.sends[0].items() if key != "operation_id"} == {
+        "login_name": "EmployeeA",
+        "kind": kind,
+        "card": card,
+    }
+    assert f"operationId={boundary.sends[0]['operation_id']}" in result
+    assert [call[0] for call in boundary.calls] == [
+        "search_employees",
+        "get_user_profile",
+        "send_card_to_user",
+    ]
+
+
+@pytest.mark.parametrize("tool_type,args,kind,card", CARD_CASES)
+async def test_directed_card_selection_binds_original_payload_and_uid(tool_type, args, kind, card):
+    boundary = NativeBoundary([employee(), employee("uid-b", "张三", "EmployeeB")])
+    manager = KairoNotifications()
+    tool, choose = tool_type(manager), KairoSelectEmployeeTool(manager)
+    source = make_event(boundary)
+    listing = await tool.call(wrap(source), name="张三", **args)
+    assert "EmployeeB" in listing and not boundary.sends
+    assert "错误" in await choose.call(wrap(source), choice=2)
+    boundary.employees.reverse()
+    result = await choose.call(wrap(make_event(boundary, "选第2个", message_id="choice")), choice=2)
+    assert "sent" in result
+    assert [(send["login_name"], send["kind"], send["card"]) for send in boundary.sends] == [
+        ("EmployeeB", kind, card)
+    ]
+
+
+@pytest.mark.parametrize("tool_type,args,kind,card", CARD_CASES)
+async def test_member_cannot_direct_card_or_query_employees(tool_type, args, kind, card):
+    boundary = NativeBoundary()
+    result = await tool_type(KairoNotifications()).call(
+        wrap(make_event(boundary, admin=False)), name="张三", **args
+    )
+    assert "ACCESS_DENIED" in result
+    assert boundary.calls == []
+
+
+@pytest.mark.parametrize("tool_type,args,kind,card", CARD_CASES)
+@pytest.mark.parametrize("failure", ["identity", "policy", "unknown"])
+async def test_directed_card_rechecks_recipient_and_never_replays(
+    tool_type, args, kind, card, failure
+):
+    boundary = NativeBoundary(
+        [employee(), employee("uid-b", "张三", "EmployeeB")],
+        status="unknown" if failure == "unknown" else "sent",
+    )
+    manager = KairoNotifications()
+    tool, choose = tool_type(manager), KairoSelectEmployeeTool(manager)
+    config = {}
+    await tool.call(wrap(make_event(boundary, config=config)), name="张三", **args)
+    if failure == "identity":
+        boundary.profiles["uid-b"]["loginName"] = "Changed"
+    if failure == "policy":
+        config["user_blacklist"] = ["EmployeeB"]
+    event = make_event(boundary, "2", message_id="choice", config=config)
+    result = await choose.call(wrap(event), choice=2)
+    assert {"identity": "IDENTITY_CHANGED", "policy": "ACCESS_DENIED", "unknown": "unknown"}[
+        failure
+    ] in result
+    assert await choose.call(wrap(event), choice=2) == result
+    await choose.call(wrap(make_event(boundary, "2", message_id="retry", config=config)), choice=2)
+    assert len(boundary.sends) == (1 if failure == "unknown" else 0)
+
+
+async def test_new_text_notification_replaces_pending_card_intent():
+    boundary = NativeBoundary([employee(), employee("uid-b", "张三", "EmployeeB")])
+    manager = KairoNotifications()
+    await KairoSendAppCardTool(manager).call(
+        wrap(make_event(boundary)), name="张三", title="旧卡片", text="旧正文"
+    )
+    await KairoNotifyEmployeeTool(manager).call(
+        wrap(make_event(boundary, message_id="new")), name="张三", text="新文本"
+    )
+    await KairoSelectEmployeeTool(manager).call(
+        wrap(make_event(boundary, "2", message_id="choice")), choice=2
+    )
+    assert [(send["login_name"], send["text"]) for send in boundary.sends] == [
+        ("EmployeeB", "新文本")
+    ]
+
+
+async def test_pending_business_card_keeps_summary_snapshot():
+    boundary = NativeBoundary([employee(), employee("uid-b", "张三", "EmployeeB")])
+    manager = KairoNotifications()
+    summary = ["原始摘要"]
+    await KairoSendBizCardTool(manager).call(
+        wrap(make_event(boundary)),
+        name="张三",
+        title="任务",
+        text="正文",
+        bizType=1,
+        bizUrl="/task/42",
+        summary=summary,
+    )
+    summary[0] = "调用方后来修改"
+    await KairoSelectEmployeeTool(manager).call(
+        wrap(make_event(boundary, "2", message_id="choice")), choice=2
+    )
+    assert boundary.sends[0]["card"]["summary"] == ["原始摘要"]

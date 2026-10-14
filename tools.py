@@ -1,9 +1,14 @@
-"""当前 Kairo 事件的模型工具及请求级权限分组。"""
+"""Kairo 媒体、卡片工具及请求级权限分组。"""
+
+from __future__ import annotations
 
 import asyncio
 from html import escape
+from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
+from astrbot.api.message_components import File, Image
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.astr_agent_context import AstrAgentContext
@@ -12,10 +17,20 @@ from jsonschema import ValidationError, validate
 from .event import KairoMessageEvent
 from .transport import BridgeError
 
+if TYPE_CHECKING:
+    from .notifications import KairoNotifications
+
 KAIRO_ADMIN_TOOL_NAMES = frozenset({"kairo_notify_employee", "kairo_select_employee"})
 KAIRO_TOOL_NAMES = (
     frozenset(
-        {"kairo_send_voice", "kairo_send_app_card", "kairo_send_url_card", "kairo_send_biz_card"}
+        {
+            "kairo_send_voice",
+            "kairo_send_image",
+            "kairo_send_file",
+            "kairo_send_app_card",
+            "kairo_send_url_card",
+            "kairo_send_biz_card",
+        }
     )
     | KAIRO_ADMIN_TOOL_NAMES
 )
@@ -39,6 +54,41 @@ def _outcome_error(result: dict) -> str:
     return f"错误：发送未成功（{status!r}）：{reason}。{diagnostic}"
 
 
+def _card_data(name: str, args: dict) -> dict:
+    data = {key: value for key, value in args.items() if key != "name"}
+    if name == "kairo_send_app_card":
+        data["type"] = "kairo.app"
+        data["content"] = (
+            escape(data.pop("text")).replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br>")
+        )
+    elif name == "kairo_send_url_card":
+        data["type"] = "kairo.url"
+    else:
+        data["type"] = "kairo.biz"
+        data["content"] = data.pop("text")
+        if "summary" in data:
+            data["summary"] = list(data["summary"])
+    return data
+
+
+async def _media_data(event: KairoMessageEvent, name: str, args: dict) -> dict:
+    kind = "image" if name == "kairo_send_image" else "file"
+    if "path" in args:
+        if not event.is_admin():
+            raise BridgeError("ACCESS_DENIED", "仅管理员可指定宿主本地文件路径")
+        if "attachment_index" in args:
+            raise ValueError("path 和 attachment_index 不能同时提供")
+        source = Path(args["path"])
+    else:
+        component = Image if kind == "image" else File
+        attachments = [item for item in event.get_messages() if isinstance(item, component)]
+        index = args.get("attachment_index", 1)
+        if index > len(attachments):
+            raise BridgeError("FILE_UNAVAILABLE", f"当前消息没有第 {index} 个{kind}附件")
+        source = attachments[index - 1]
+    return await event.adapter.get_client().prepare_media(kind, source)
+
+
 async def _submit(event: KairoMessageEvent, name: str, args: dict, operation_id: str) -> str | None:
     try:
         if name == "kairo_send_voice":
@@ -48,21 +98,18 @@ async def _submit(event: KairoMessageEvent, name: str, args: dict, operation_id:
                 sender_id=event.sender_id,
                 operation_id=operation_id,
             )
+        elif name in {"kairo_send_image", "kairo_send_file"}:
+            client = event.adapter.get_client()
+            # 任意宿主路径仅管理员可读；先检查再做名单查询或文件 I/O。
+            if "path" in args and not event.is_admin():
+                raise BridgeError("ACCESS_DENIED", "仅管理员可指定宿主本地文件路径")
+            await client.check_inbound(event.message_obj)
+            media = await _media_data(event, name, args)
+            result = await client.send_media(
+                event.target_session_id, media, sender_id=event.sender_id, operation_id=operation_id
+            )
         else:
-            data = dict(args)
-            if name == "kairo_send_app_card":
-                data["type"] = "kairo.app"
-                data["content"] = (
-                    escape(data.pop("text"))
-                    .replace("\r\n", "\n")
-                    .replace("\r", "\n")
-                    .replace("\n", "<br>")
-                )
-            elif name == "kairo_send_url_card":
-                data["type"] = "kairo.url"
-            else:
-                data["type"] = "kairo.biz"
-                data["content"] = data.pop("text")
+            data = _card_data(name, args)
             result = await event.adapter.get_client().send_card(
                 event.target_session_id,
                 data,
@@ -80,6 +127,8 @@ async def _submit(event: KairoMessageEvent, name: str, args: dict, operation_id:
         )
     except (ValueError, TypeError) as exc:
         return f"错误（INVALID_ARGUMENT）：{exc}；operationId={operation_id or '未提交'}；不重发。"
+    except OSError as exc:
+        return f"错误（FILE_UNAVAILABLE）：{exc}；operationId={operation_id}；不重发。"
     # 宿主执行器用 None 结束默认主聊天 Agent 的续答，不另补一条文字消息。
     return None
 
@@ -144,53 +193,71 @@ class KairoSendVoiceTool(FunctionTool[AstrAgentContext]):
 
 
 class KairoSendAppCardTool(FunctionTool[AstrAgentContext]):
-    def __init__(self) -> None:
+    def __init__(self, manager: KairoNotifications) -> None:
         super().__init__(
             name="kairo_send_app_card",
             description=(
-                "仅在用户明确要求应用卡片/公告卡片时调用，发送到当前 Kairo 会话。"
+                "仅在用户明确要求应用卡片/公告卡片时调用。不传 name 发到当前 Kairo 会话；"
+                "管理员明确要求跨会话通知员工时，name 填用户提供的员工姓名，不得填 UID 或猜测工号。"
+                "重名或模糊匹配须展示全部候选，等待下一条用户消息调用 kairo_select_employee 选择。"
                 "title 和 text 为普通文字，正文由插件转义 HTML 并保留换行；linkUrl 可选。"
                 "普通聊天不要调用；不要另补文字，不确定的发送结果不得重发。"
             ),
             parameters={
                 "type": "object",
-                "properties": {"title": _TEXT, "text": _TEXT, "linkUrl": _TEXT},
+                "properties": {"title": _TEXT, "text": _TEXT, "linkUrl": _TEXT, "name": _TEXT},
                 "required": ["title", "text"],
                 "additionalProperties": False,
             },
         )
+        self._manager = manager
 
     async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str | None:
+        if "name" in kwargs:
+            return await self._manager._call(self, context, kwargs)
         return await _call(self, context, kwargs)
 
 
 class KairoSendUrlCardTool(FunctionTool[AstrAgentContext]):
-    def __init__(self) -> None:
+    def __init__(self, manager: KairoNotifications) -> None:
         super().__init__(
             name="kairo_send_url_card",
             description=(
-                "仅在用户明确要求链接卡片时调用，发送到当前 Kairo 会话。"
+                "仅在用户明确要求链接卡片时调用。不传 name 发到当前 Kairo 会话；"
+                "管理员明确要求跨会话通知员工时，name 填用户提供的员工姓名，不得填 UID 或猜测工号。"
+                "重名或模糊匹配须展示全部候选，等待下一条用户消息调用 kairo_select_employee 选择。"
                 "提供普通文字 title/summary 和用户指定或已知的 linkUrl，可选 picUrl。"
                 "普通聊天不要调用；不要另补文字，不确定的发送结果不得重发。"
             ),
             parameters={
                 "type": "object",
-                "properties": {"title": _TEXT, "summary": _TEXT, "linkUrl": _TEXT, "picUrl": _TEXT},
+                "properties": {
+                    "title": _TEXT,
+                    "summary": _TEXT,
+                    "linkUrl": _TEXT,
+                    "picUrl": _TEXT,
+                    "name": _TEXT,
+                },
                 "required": ["title", "summary", "linkUrl"],
                 "additionalProperties": False,
             },
         )
+        self._manager = manager
 
     async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str | None:
+        if "name" in kwargs:
+            return await self._manager._call(self, context, kwargs)
         return await _call(self, context, kwargs)
 
 
 class KairoSendBizCardTool(FunctionTool[AstrAgentContext]):
-    def __init__(self) -> None:
+    def __init__(self, manager: KairoNotifications) -> None:
         super().__init__(
             name="kairo_send_biz_card",
             description=(
-                "仅在用户明确要求业务卡片时调用，发送到当前 Kairo 会话。"
+                "仅在用户明确要求业务卡片时调用。不传 name 发到当前 Kairo 会话；"
+                "管理员明确要求跨会话通知员工时，name 填用户提供的员工姓名，不得填 UID 或猜测工号。"
+                "重名或模糊匹配须展示全部候选，等待下一条用户消息调用 kairo_select_employee 选择。"
                 "title/text/summary 是普通文字；bizType=1 为任务样式、2 为日程样式，bizUrl 为已存在业务的相对路径。"
                 "不可虚构业务目标，不会创建业务对象；没有真实业务路径时不要调用。"
                 "普通聊天不要调用；不要另补文字，不确定的发送结果不得重发。"
@@ -203,11 +270,77 @@ class KairoSendBizCardTool(FunctionTool[AstrAgentContext]):
                     "bizType": {"type": "integer", "enum": [1, 2]},
                     "bizUrl": {"type": "string", "pattern": "^/(?!/)", "minLength": 1},
                     "summary": {"type": "array", "items": {"type": "string"}},
+                    "name": _TEXT,
                 },
                 "required": ["title", "text", "bizType", "bizUrl"],
                 "additionalProperties": False,
             },
         )
+        self._manager = manager
 
     async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str | None:
+        if "name" in kwargs:
+            return await self._manager._call(self, context, kwargs)
+        return await _call(self, context, kwargs)
+
+
+class KairoSendImageTool(FunctionTool[AstrAgentContext]):
+    def __init__(self, manager: KairoNotifications) -> None:
+        super().__init__(
+            name="kairo_send_image",
+            description=(
+                "仅在用户明确要求发送图片时调用。不传 name 发当前 Kairo 会话；"
+                "管理员可用员工姓名 name 跨会话推送，包括首次私聊。不得猜测 UID 或工号。"
+                "默认发送当前消息的第一张图片；attachment_index 为图片序号，从 1 开始。"
+                "管理员也可用 path 指定已存在的宿主本地图片，不可编造路径或填 URL；"
+                "path 与 attachment_index 二选一。没有可用图片时不能发送。"
+                "重名或模糊匹配须展示全部候选，等下一条用户消息调用 kairo_select_employee。"
+                "不另补文字，不确定的发送结果不得重发。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": _TEXT,
+                    "path": _TEXT,
+                    "attachment_index": {"type": "integer", "minimum": 1},
+                },
+                "additionalProperties": False,
+            },
+        )
+        self._manager = manager
+
+    async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str | None:
+        if "name" in kwargs:
+            return await self._manager._call(self, context, kwargs)
+        return await _call(self, context, kwargs)
+
+
+class KairoSendFileTool(FunctionTool[AstrAgentContext]):
+    def __init__(self, manager: KairoNotifications) -> None:
+        super().__init__(
+            name="kairo_send_file",
+            description=(
+                "仅在用户明确要求发送文件时调用。不传 name 发当前 Kairo 会话；"
+                "管理员可用员工姓名 name 跨会话推送，包括首次私聊。不得猜测 UID 或工号。"
+                "默认发送当前消息的第一个文件；attachment_index 为文件序号，从 1 开始。"
+                "管理员也可用 path 指定已存在的宿主本地文件，不可编造路径或填 URL；"
+                "path 与 attachment_index 二选一。没有可用文件时不能发送。"
+                "重名或模糊匹配须展示全部候选，等下一条用户消息调用 kairo_select_employee。"
+                "保留原始文件名，不另补文字，不确定的发送结果不得重发。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": _TEXT,
+                    "path": _TEXT,
+                    "attachment_index": {"type": "integer", "minimum": 1},
+                },
+                "additionalProperties": False,
+            },
+        )
+        self._manager = manager
+
+    async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str | None:
+        if "name" in kwargs:
+            return await self._manager._call(self, context, kwargs)
         return await _call(self, context, kwargs)

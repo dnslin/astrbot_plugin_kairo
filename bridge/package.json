@@ -11,11 +11,11 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "dev": "node --import tsx src/index.ts",
-    "test": "node --import tsx --test tests/attachments.test.ts tests/bridge.test.ts tests/protocol.test.ts tests/store.test.ts tests/whoami.test.ts",
+    "test": "node --import tsx --test tests/attachments.test.ts tests/bridge.test.ts tests/driver-directed-cards.test.ts tests/driver-directed-media.test.ts tests/protocol.test.ts tests/store.test.ts tests/whoami.test.ts",
     "check": "pnpm build && pnpm test"
   },
   "dependencies": {
-    "@kairo/driver": "file:vendor/kairo-driver-c4c9c677fa8f",
+    "@kairo/driver": "file:vendor/kairo-driver-c4c9c677fa8f.tgz",
     "ws": "8.19.0"
   },
   "devDependencies": {

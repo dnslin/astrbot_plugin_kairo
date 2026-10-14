@@ -12,10 +12,9 @@ from astrbot.core.astr_agent_context import AstrAgentContext
 from jsonschema import ValidationError, validate
 
 from .event import KairoMessageEvent
-from .tools import _outcome_error, is_kairo_event
+from .tools import _ATTEMPTS_KEY, _card_data, _media_data, _outcome_error, is_kairo_event
 from .transport import BridgeError
 
-_ATTEMPTS_KEY = "astrbot_plugin_kairo.notification_attempts"
 _SEND_KEY = "astrbot_plugin_kairo.notification_send"
 _TEXT = {"type": "string", "minLength": 1}
 _CHOICE = re.compile(
@@ -82,7 +81,7 @@ def _timestamp(event: KairoMessageEvent) -> float:
 
 @dataclass
 class _Pending:
-    body: str
+    body: str | dict
     operation_id: str
     source_id: str
     source_timestamp: float
@@ -125,8 +124,14 @@ class KairoNotifications:
         # Both notification tools share this event-level side-effect guard.
         # Claim before recipient profile lookup/side-effect await, including cancellation.
         event.set_extra(_SEND_KEY, pending.operation_id)
+        if isinstance(pending.body, str):
+            content = {"text": pending.body}
+        elif "kind" in pending.body:
+            content = {"media": pending.body}
+        else:
+            content = {"card": pending.body}
         result = await event.adapter.get_client().notify_employee_uid(
-            uid, login, pending.body, operation_id=pending.operation_id
+            uid, login, **content, operation_id=pending.operation_id
         )
         if result.get("status") != "sent":
             prefix = f"[{result['code']}] " if result.get("code") is not None else ""
@@ -139,14 +144,17 @@ class KairoNotifications:
             f"sessionId={result.get('sessionId') or '未返回'}"
         )
 
-    async def _notify(self, event: KairoMessageEvent, args: dict, attempt: dict) -> str:
+    async def _notify(self, event: KairoMessageEvent, name: str, args: dict, attempt: dict) -> str:
         scope = self._scope(event)
         previous = self._latest.get(scope)
         if previous is not None and previous[0] > event.received_at_ns:
             return "该通知消息早于当前通知意图，旧查询不会替换或发送。"
         self._latest[scope] = (event.received_at_ns, attempt["operation_id"])
+        is_media = name in {"kairo_send_image", "kairo_send_file"}
         pending = _Pending(
-            body=args["text"],
+            body=args["text"]
+            if name == "kairo_notify_employee"
+            else (dict(args) if is_media else _card_data(name, args)),
             operation_id=attempt["operation_id"],
             source_id=event.message_obj.message_id,
             source_timestamp=_timestamp(event),
@@ -155,6 +163,10 @@ class KairoNotifications:
         # generation: an older in-flight result must never publish or auto-send.
         self._pending[scope] = pending
         try:
+            if is_media:
+                pending.body = await _media_data(event, name, args)
+                if self._pending.get(scope) is not pending:
+                    return "该通知已被同一管理员的新通知替换，旧附件不会发送。"
             result = await event.adapter.get_client().search_employees(args["name"])
         except BaseException:
             if self._pending.get(scope) is pending:
@@ -215,9 +227,9 @@ class KairoNotifications:
             await event.adapter.get_client().check_inbound(event.message_obj)
             if error := _authorization_error(event):
                 return error
-            if name == "kairo_notify_employee":
-                return await self._notify(event, args, attempt)
-            return await self._select(event, args, attempt)
+            if name == "kairo_select_employee":
+                return await self._select(event, args, attempt)
+            return await self._notify(event, name, args, attempt)
         except BridgeError as exc:
             if exc.result:
                 result = dict(exc.result)
@@ -232,10 +244,14 @@ class KairoNotifications:
             return (
                 f"错误（INVALID_ARGUMENT）：{exc}；operationId={attempt['operation_id']}；不重发。"
             )
+        except OSError as exc:
+            return (
+                f"错误（FILE_UNAVAILABLE）：{exc}；operationId={attempt['operation_id']}；不重发。"
+            )
 
     async def _call(
         self, tool: FunctionTool, context: ContextWrapper[AstrAgentContext], args: dict
-    ) -> str:
+    ) -> str | None:
         event = context.context.event
         # Authorization precedes schema/state/search access; model arguments or
         # platform strings alone never grant admin privileges.
@@ -302,7 +318,7 @@ class KairoSelectEmployeeTool(FunctionTool[AstrAgentContext]):
             description=(
                 "仅管理员已看到员工候选列表后，在下一条真实用户消息明确回复数字编号时调用。"
                 "choice 必须对应当前原生消息的明确数字选择，不能由模型推断或替用户决定。"
-                "按保存的候选 UID 和原始通知正文发送，不能修改正文、工号、会话或用户。"
+                "按保存的候选 UID 和原始通知文本或卡片发送，不能修改内容、工号、会话或用户。"
                 "发送前复查真实 UID、准确工号和员工名单；失败或未知结果不得重发。"
             ),
             parameters={

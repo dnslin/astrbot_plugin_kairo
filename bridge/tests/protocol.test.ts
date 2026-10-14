@@ -80,6 +80,87 @@ test('三类原生卡片保留准确Driver字段且拒绝额外或错误字段',
   assert.throws(() => parseRequest({ ...request, params: { operation_id: 'o', target_session_id: '23', kind: 'biz_card', card: { title: 't', content: 'c', bizType: 3, bizUrl: '/' } } }), /bizType/);
 });
 
+test('按工号发送三类卡片保留原生载荷，工号 trim 并保留大小写与前导零', () => {
+  const cards = [
+    { kind: 'app_card', card: { title: '通知', content: '<p>内容</p>', linkUrl: '/app', pcAppCode: 'real-app' } },
+    { kind: 'url_card', card: { title: '链接', summary: '摘要', linkUrl: 'https://example.com', picUrl: 'https://example.com/image.png' } },
+    { kind: 'biz_card', card: { title: '业务', content: '内容', summary: ['摘要'], bizUrl: '/', bizType: 2 } },
+  ];
+  for (const item of cards) {
+    const directed = { type: 'request', id: 'card-user', action: 'send_card_to_user', params: { operation_id: 'card-intent', login_name: ' 00AbC ', ...item } };
+    assert.deepEqual(parseRequest(directed), { ...directed, params: { ...directed.params, login_name: '00AbC' } });
+    for (const extra of [
+      { target_session_id: '23' }, { targetSessionId: '23' }, { targetLoginName: 'other' },
+      { text: '不能先发文本' }, { reply_to: '101' }, { quote: '101' }, { mentions: [] }, { extra: true },
+    ]) {
+      assert.throws(() => parseRequest({ ...directed, params: { ...directed.params, ...extra } }), /不支持/);
+    }
+    for (const login_name of [undefined, null, '', '  ', 123, 'a'.repeat(257)]) {
+      assert.throws(() => parseRequest({ ...directed, params: { ...directed.params, login_name } }), /login_name/);
+    }
+    for (const card of [undefined, null, [], 'card', { ...item.card, unsupported: true }, { ...item.card, title: '' }, { ...item.card, title: 'a'.repeat(128_001) }]) {
+      assert.throws(() => parseRequest({ ...directed, params: { ...directed.params, card } }), /card/);
+    }
+    assert.doesNotThrow(() => parseRequest({ ...directed, params: { ...directed.params, card: { ...item.card, title: '😀'.repeat(64_000) } } }));
+  }
+});
+
+test('按工号卡片拒绝非卡片类型和错误原生卡片字段', () => {
+  const directed = { type: 'request', id: 'card-user', action: 'send_card_to_user', params: { operation_id: 'card-intent', login_name: '00AbC', kind: 'biz_card', card: { title: '业务', content: '正文', bizUrl: '/', bizType: 1 } } };
+  for (const kind of [undefined, null, 'text', 'voice_text', 'image', 'file', 'voice', 'chat_record', 'other']) {
+    assert.throws(() => parseRequest({ ...directed, params: { ...directed.params, kind } }), { code: 'UNSUPPORTED_MESSAGE' });
+  }
+  for (const card of [
+    { title: '业务', content: '正文', bizUrl: '/', bizType: 3 },
+    { title: '业务', content: '正文', bizUrl: 'https://example.com', bizType: 1 },
+    { title: '业务', content: '正文', bizUrl: '//example.com', bizType: 1 },
+    { title: '业务', content: '正文', bizUrl: '/', bizType: 1, summary: '摘要' },
+    { title: '业务', content: '正文', bizUrl: '/', bizType: 1, summary: [1] },
+  ]) {
+    assert.throws(() => parseRequest({ ...directed, params: { ...directed.params, card } }), /card/);
+  }
+  assert.throws(() => parseRequest({ ...directed, params: { ...directed.params, kind: 'app_card', card: { title: '通知', content: '正文', linkUrl: 123 } } }), /card.linkUrl/);
+  assert.throws(() => parseRequest({ ...directed, params: { ...directed.params, kind: 'url_card', card: { title: '链接', summary: '摘要' } } }), /card.linkUrl/);
+});
+
+test('按工号图片文件保留 file_id 与文件名，工号 trim 并保留大小写及前导零', () => {
+  for (const kind of ['image', 'file']) {
+    const directed = { type: 'request', id: 'media-user', action: 'send_media_to_user', params: { operation_id: 'media-intent', login_name: ' 00AbC ', kind, file_id: 'a0'.repeat(16), name: '原始 文件名.png' } };
+    assert.deepEqual(parseRequest(directed), { ...directed, params: { ...directed.params, login_name: '00AbC' } });
+    const { name: _name, ...withoutName } = directed.params;
+    assert.deepEqual(parseRequest({ ...directed, params: withoutName }).params, { ...withoutName, login_name: '00AbC' });
+    for (const extra of [
+      { target_session_id: '23' }, { targetSessionId: '23' }, { targetLoginName: 'other' }, { session_id: '23' },
+      { path: '/tmp/private.png' }, { filePath: '/tmp/private.png' }, { url: 'https://example.com/image.png' },
+      { text: '不能先发文本' }, { reply_to: '101' }, { quote: '101' }, { mentions: [] }, { card: {} }, { extra: true },
+    ]) {
+      assert.throws(() => parseRequest({ ...directed, params: { ...directed.params, ...extra } }), { code: 'INVALID_REQUEST' });
+    }
+    for (const login_name of [undefined, null, '', '  ', 123, {}, [], 'a'.repeat(257)]) {
+      assert.throws(() => parseRequest({ ...directed, params: { ...directed.params, login_name } }), /login_name/);
+    }
+    for (const file_id of [undefined, null, '', 'a'.repeat(31), 'a'.repeat(33), 'A'.repeat(32), 'g'.repeat(32), ` ${'a'.repeat(32)}`, '../secret', 'https://example.com/image.png', 123, {}, []]) {
+      assert.throws(() => parseRequest({ ...directed, params: { ...directed.params, file_id } }), /file_id/);
+    }
+    for (const name of [null, '', '  ', '\r\n', 123, {}, [], 'a'.repeat(257)]) {
+      assert.throws(() => parseRequest({ ...directed, params: { ...directed.params, name } }), /name/);
+    }
+    for (const operation_id of [undefined, null, '', '  ', 123]) {
+      assert.throws(() => parseRequest({ ...directed, params: { ...directed.params, operation_id } }), /operation_id/);
+    }
+  }
+});
+
+test('按工号媒体拒绝图片文件以外的类型及错误请求形状', () => {
+  const directed = { type: 'request', id: 'media-user', action: 'send_media_to_user', params: { operation_id: 'media-intent', login_name: '00AbC', kind: 'image', file_id: 'a'.repeat(32) } };
+  for (const kind of [undefined, null, 'text', 'voice_text', 'voice', 'app_card', 'url_card', 'biz_card', 'chat_record', 'other', 1, {}, []]) {
+    assert.throws(() => parseRequest({ ...directed, params: { ...directed.params, kind } }), { code: 'UNSUPPORTED_MESSAGE' });
+  }
+  for (const params of [undefined, null, [], 'image', 1]) {
+    assert.throws(() => parseRequest({ ...directed, params }), { code: 'INVALID_REQUEST' });
+  }
+});
+
 test('结果保留原生回执与查询载荷，发送不返回success或recall', () => {
   const receipt = { draftId: 'd', sessionId: '23', code: 0, businessCode: 0, messageId: 'm', msgIdx: 5 };
   const result = serializeResult({ status: 'sent', operationId: 'o', messageId: 'm', sessionId: '23', nativeCode: 0, receipt, isPreTrigger: false, verifyLatencyMs: 7, recall: async () => true });

@@ -47,5 +47,7 @@ for (const name of ['@audio__decode-wav@1.5.0.patch', 'node-edge-tts@1.2.11.patc
   if (digest(resolve(root, 'patches', name)) !== digest(resolve(source, 'patches', name))) throw new Error(`Driver 音频补丁不一致：${name}`);
 }
 run(pnpm, ['install', '--frozen-lockfile'], source);
-run(pnpm, ['build'], source);
-console.log(`Driver ${revision} 已准备完成（${source}）；继续运行 pnpm install --frozen-lockfile。`);
+// pnpm 的目录 file 依赖跳过补丁并与原始 checkout 硬链接；归档安装才能隔离并应用源码/产物补丁。
+// pack 的 prepack 已执行 build，且 pnpm 固定归档时间戳，避免重复编译和不稳定的包身份。
+run(pnpm, ['pack', '--out', '../kairo-driver-c4c9c677fa8f.tgz'], source);
+console.log(`Driver ${revision} 已准备完成（vendor/kairo-driver-c4c9c677fa8f.tgz）；继续运行 pnpm install --frozen-lockfile。`);

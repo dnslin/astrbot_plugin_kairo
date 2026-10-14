@@ -6,7 +6,7 @@
 
 ## 安装与启动
 
-本版固定上游 [main 提交 `c4c9c677fa8fe3bfa5c4d2ab94505f1b5918efaf`](https://github.com/dnslin/kairo-driver/commit/c4c9c677fa8fe3bfa5c4d2ab94505f1b5918efaf)，包含 Edge TTS 新端点及清理补丁、全分页人员搜索、远程 CDP 和跨机器附件传输。上游包版本仍为 2.0.1，源码身份以提交为准；准备脚本、目录依赖和锁文件使用同一固定提交，不依赖本机开发链接。
+本版固定上游 [main 提交 `c4c9c677fa8fe3bfa5c4d2ab94505f1b5918efaf`](https://github.com/dnslin/kairo-driver/commit/c4c9c677fa8fe3bfa5c4d2ab94505f1b5918efaf)，包含 Edge TTS 新端点及清理补丁、全分页人员搜索、远程 CDP 和跨机器附件传输。上游包版本仍为 2.0.1，源码身份以提交为准；准备脚本、生成的归档依赖和锁文件使用同一固定提交，冻结安装应用本仓库的定向卡片补丁，不依赖本机开发链接。
 
 ### 1. 在 Windows 启动 KK9
 
@@ -148,7 +148,7 @@ Driver 优先非空 `HTTPS_PROXY`，其次非空 `HTTP_PROXY`，均未设置保�
 
 ## 依赖与验证
 
-Driver 固定到 `dnslin/kairo-driver` 的 main 提交 `c4c9c677fa8fe3bfa5c4d2ab94505f1b5918efaf`，不是以仍为 2.0.1 的包版本号或旧发布提交识别。准备脚本在 `vendor/kairo-driver-c4c9c677fa8f` 检出固定源码并构建，通过同名 `file:` 目录依赖消费；不应用旧 `driver-native-send.patch`，保留上游 WAV 解码补丁及 `node-edge-tts@1.2.11.patch`。
+Driver 固定到 `dnslin/kairo-driver` 的 main 提交 `c4c9c677fa8fe3bfa5c4d2ab94505f1b5918efaf`，不是以仍为 2.0.1 的包版本号或旧发布提交识别。准备脚本在 `vendor/kairo-driver-c4c9c677fa8f` 检出固定源码，再用标准 `pnpm pack` 的 prepack 构建并生成 `vendor/kairo-driver-c4c9c677fa8f.tgz`；桥接从该相对归档依赖安装。这样 pnpm 能实际应用 `@kairo__driver@2.0.1.patch` 的三类卡片及图片/文件定向发送补丁，而不是跳过目录依赖补丁或与原始 checkout 硬链接。保留上游 WAV 解码补丁及 `node-edge-tts@1.2.11.patch`，不恢复旧发送补丁。
 
 桥接工作区同时将 `node-edge-tts` override 锁定为 1.2.11，并应用同一补丁；只改 Driver 提交而保留 1.2.10 的强制版本会继续安装旧 SDK。准备脚本核对新版补丁文件名及内容，冻结安装使用对应新锁文件。既有 `sendVoice({text})` 调用链、默认音色、标准代理优先级、KK 编码及未知不重发规则不变。
 
@@ -176,8 +176,12 @@ pnpm check
 
 历史按需工具实施阶段验证：配套 Driver 完整检查 409 项、桥接构建及 35 项 Node 测试、Python 最终全套 186 项通过；编译产物真实 WS/SQLite 闭环验证四类输出及防重，仅 KK9 使用 Fake。正常固定 Driver 通过标准进程代理完成真实 Edge 合成及 KK AMR 编码/回解，没有发送消息；接收端播放和卡片呈现仍需人工验收。历史发布曾配套 Driver 2.0.1 并补充代理 CONNECT 超时释放修复；当前依赖使用上述 main 固定提交。具体历史检查、失败记录及验证边界见[开发说明](../docs/DEVELOPMENT.md#按需语音与原生卡片工具方案-b)。
 
-当前姓名通知接入：`search_employees` 只读调用 Driver 全分页搜索，保留 UID、可空真实姓名/工号/部门路径和 `hasMore:false`；不在桥接端截断候选或处理用户编号。管理员权限、候选状态和发送前 UID/工号核对由 Python 插件负责，再通过既有 `send_to_user` 发送。本轮 `pnpm check` 构建及 44 项 Node 测试、Python 全套 286 项通过；独立编译产物真实 WS/SQLite 烟测只以 Fake 替代 KK9，未发送真实消息。
+姓名通知接入：`search_employees` 只读调用 Driver 全分页搜索，保留 UID、可空真实姓名/工号/部门路径和 `hasMore:false`；不在桥接端截断候选或处理用户编号。管理员权限、候选状态和发送前 UID/工号核对由 Python 插件负责，再通过 `send_to_user` 发送文本、`send_card_to_user` 发送三类卡片或 `send_media_to_user` 发送图片/文件，均支持首次私聊且不预发其他消息。媒体仅接收缓存 `file_id` 及可选文件名，下载后再次核对账号；定向分派不允许会话覆盖、引用或提及。
 
 
 0.5.1 同步验证：标准远端准备及冻结安装、`pnpm check` 构建和44项Node测试、Python全套286项通过。独立进程解析到桥接固定Driver及带补丁的SDK1.2.11，经本机既有代理真实合成19296字节MP3，解码为24000Hz、3.216秒、有声；临时音频已清理。未连接CDP或执行聊天操作，不将MP3合成当作KK编码或接收端播放验收。
+
+卡片跨会话验证：标准准备、冻结安装、TypeScript 构建和 62 项 Node 测试、321 项 Python 测试通过；独立编译产物真实 AstrBot/WS/SQLite 烟测验证三类定向卡片、重名选择、首次联系及 unknown 不重发。仅 KK9 使用 Fake，未发送真实消息；客户端呈现仍需人工验收。生成归档两次重建字节一致，原始 vendor checkout 不修改。
+
+图片文件跨会话验证：冻结安装、TypeScript 构建及 86 项 Node、357 项 Python 测试、Ruff 规则及 21 文件格式检查通过。真实生成 renderer 脚本验证定向字节、正式回执及取消清理；独立编译产物真实 AstrBot/HTTP/WS/SQLite 烟测验证首次图片、已有私聊文件及 unknown 不重发。仅 KK9 使用 Fake，未向真实员工发送消息，接收端图片/文件呈现仍待人工验收。
 

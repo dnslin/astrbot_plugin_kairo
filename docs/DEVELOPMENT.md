@@ -9,8 +9,8 @@
 - `client.py`：事件回复、主动发送、媒体、卡片和工号通知的共用入口，不向外暴露原始 RPC。
 - `adapter.py` / `event.py`：宿主注册、生命周期、事件提交和回复目标。
 - `main.py`：插件工具注册、请求级平台/管理员筛选及 ADMIN 工号通知命令；命令正文保留空格和换行。
-- `tools.py`：当前真实 Kairo 事件的语音和三类卡片工具、普通文字到固定卡片字段、一次尝试及原生结果处理。
-- `notifications.py`：管理员姓名通知、原生消息编号选择、按实例/会话/员工隔离的 UID 候选及原始正文、跨事件确认和一次发送尝试。
+- `tools.py`：当前真实 Kairo 事件的语音、图片、文件及三类卡片工具、普通文字到固定卡片字段、附件选择、可选姓名路由、一次尝试及原生结果处理。
+- `notifications.py`：管理员文本/卡片/附件姓名通知、原生消息编号选择、按实例/会话/员工隔离的 UID 候选及原始内容快照、跨事件确认和一次发送尝试。
 - `transport.py` / `bridge/src`：协议 v2、WebSocket、鉴权文件传输、Driver 分派及持久发送记录。
 
 不建立旧协议、旧界面会话 ID 或旧发送补丁兼容层。用户已确认无需旧数据迁移；现存运行目录不由准备脚本自动删除。
@@ -18,12 +18,12 @@
 ## 依赖来源
 
 - AstrBot 验证基线：`v4.29.0-beta.1`，元数据约束 `>=4.29.0b1,<5`。该基线不是稳定版承诺。
-- Driver 固定提交：`c4c9c677fa8fe3bfa5c4d2ab94505f1b5918efaf`，含 Edge SDK 1.2.11 及其资源清理补丁、完整人员搜索和远程附件；包版本仍为 2.0.1，不等同于旧 `v2.0.1` 发布提交。源码获取、目录依赖与音频补丁保持一致。
+- Driver 固定提交：`c4c9c677fa8fe3bfa5c4d2ab94505f1b5918efaf`，含 Edge SDK 1.2.11 及其资源清理补丁、完整人员搜索和远程附件；包版本仍为 2.0.1，不等同于旧 `v2.0.1` 发布提交。源码归档、卡片补丁与音频补丁保持一致。
 - Python 3.12+、Node.js 22.13+（推荐 24）、pnpm 11.19.0。
 
-Python 插件只声明 `aiohttp`，AstrBot API 与工具 schema 校验依赖由宿主提供。Driver 尚未发布 npm；准备脚本固定检出、按上游锁文件安装并构建，通过 `file:vendor/kairo-driver-c4c9c677fa8f` 目录依赖消费。桥接同步上游 WAV 解码补丁及 `node-edge-tts@1.2.11.patch`，将 SDK override 锁定 1.2.11；不再使用 1.2.10 补丁或旧 `driver-native-send.patch`。更新固定提交时同步准备脚本、依赖目录名、补丁、override 和锁文件。保留 [Driver PR #18](https://github.com/dnslin/kairo-driver/pull/18) 的完整搜索、PR #17 的远程附件以及既有原图、代理和 CONNECT 超时清理行为。
+Python 插件只声明 `aiohttp`，AstrBot API 与工具 schema 校验依赖由宿主提供。Driver 尚未发布 npm；准备脚本固定检出、按上游锁文件安装，再通过标准 `pnpm pack` 的 prepack 构建并生成 `vendor/kairo-driver-c4c9c677fa8f.tgz`。桥接使用该相对路径归档依赖，并应用 `@kairo__driver@2.0.1.patch` 的源码/编译产物补丁，增加三类卡片的准确工号目标；原始 checkout 不修改。桥接同步上游 WAV 解码补丁及 `node-edge-tts@1.2.11.patch`，SDK override 锁定 1.2.11。更新固定提交时同步准备脚本、归档名、补丁、override 和锁文件。保留 [Driver PR #18](https://github.com/dnslin/kairo-driver/pull/18) 的完整搜索、PR #17 的远程附件以及既有原图、代理和 CONNECT 超时清理行为。
 
-准备过程先在独立临时目录检出，完成后才发布最终目录；中断可重试。已有最终目录若提交不符或跟踪文件修改则明确报错，不覆盖修改。不使用本机 tarball 作为跨系统锁文件输入。
+准备过程先在独立临时目录检出，完成后才发布最终源码目录；中断可重试。已有最终目录若提交不符或跟踪文件修改则明确报错，不覆盖修改。归档由准备脚本生成，不提交或引用开发机器上的临时包；pnpm 固定归档时间戳，重复构建打包的字节一致。首次准备使用 `node scripts/prepare-driver.mjs`，避免 pnpm 在缺少归档时先自动安装依赖。
 
 尚未推送的新 Driver 提交可在本地验证：在桥接 PowerShell 设置 `$env:KAIRO_DRIVER_SOURCE = "D:/Person/kairo-driver"` 后执行准备脚本；只改变获取源码的仓库，不放宽固定提交校验。对外安装前必须先发布该 Driver 提交，再发布引用它的插件。该变量不是生产运行依赖，不设置本机路径链接。
 
@@ -87,15 +87,18 @@ CI 的 Node 检查覆盖 Windows/Linux，集成任务引用 `v4.29.0-beta.1`。0
 调用方从 `context.get_platform_inst(platform_id).get_client()` 获取 `KairoClient`：
 
 - `notify_employee(login_name, text, operation_id=None) -> dict`：准确工号首次/已有私聊文本通知，返回原生 `sent/failed/unknown`、`operationId`，成功带正式 `sessionId`；调用错误抛 `BridgeError`。
+- `notify_employee_card(login_name, card, *, operation_id=None) -> dict`：准确工号首次/已有私聊卡片通知，`card` 为 `kairo.app/kairo.url/kairo.biz` Json 字典；完整预检及名单通过后只发送该卡片，不预发文本。
 - `search_employees(keyword) -> dict`：只读返回完整 `{employees,hasMore:false}`；身份字段可空，Driver 负责分页与 UID 去重，Python 拒绝无效或不完整响应，不推断唯一。等待 35 秒，不改变全局默认时限。
-- `notify_employee_uid(user_id, login_name, text, operation_id=None) -> dict`：以搜索快照中的 UID/准确工号重查真实档案；缺失或变化抛 `BridgeError`，匹配后复用 `notify_employee` 的名单及发送意图处理。保留工号大小写和前导零；该 API 不代替模型工具的管理员检查。
+- `notify_employee_uid(user_id, login_name, text=None, *, card=None, media=None, operation_id=None) -> dict`：以搜索快照中的 UID/准确工号重查真实档案；`text`、`card`、`media` 必须且只能提供一个，`media` 使用 `prepare_media` 返回的缓存描述。缺失或变化抛 `BridgeError`，匹配后复用相应文本/卡片/附件通知的名单及发送意图处理。保留工号大小写和前导零；该 API 不代替模型工具的管理员检查。
 - `send_voice_text(target_session_id, text, sender_id=None, operation_id=None) -> dict`：当前准确原生目标的文字语音，复查名单后交给 Driver 合成，返回含 `operationId` 的原生结果；单请求等待 90 秒，不调用宿主 TTS。
 - `send_card(target_session_id, card, sender_id=None, operation_id=None) -> dict`：一张 `kairo.app/kairo.url/kairo.biz` Json 字典卡片，复用完整卡片预检和名单；返回含 `operationId` 的原生结果，调用方可提前保存 ID 并在等待取消后只查询同一意图。
+- `prepare_media(kind, source) -> dict`：`kind` 为 `image`/`file`，`source` 为宿主 `Image`/`File` 组件或可信调用方的 `Path`；缓存真实字节，保留文件名，返回 `{kind,file_id,name}`。模型工具在此调用前检查管理员路径权限。
+- `send_media(target_session_id, media, *, sender_id=None, operation_id=None) -> dict`：向明确原生会话发送上述缓存描述，复查动态名单并返回原生结果；跨会话使用 `notify_employee_uid(..., media=...)`。
 - `get_send_status(operation_id) -> dict`：只查询已存在意图，不再次发送。
 - `get_sessions() -> list[dict]`：只读原生会话，用于准确路由和群名单配置。
 - `send_chain(target_session_id, message, sender_id=None) -> None`：顺序发送支持的组件，失败或未知抛含 `result` 的 `BridgeError`；事件回复保留原群发送者作名单复查。
 
-管理员命令为 `/kairo notify <平台实例ID> <准确工号> <正文>`，不开放额外 HTTP 通知接口。四个原按需模型工具仍只发当前会话；新增两个管理员通知工具在当前 Kairo 实例内查人和选择后发文本私聊，不允许模型指定实例、会话、UID 或工号。通讯超时/断线且未确认成功的 Python 发送结果额外保留 `code`，不重发。工具使用及网络前提见主说明，内部字段见 [协议 v2](PROTOCOL.md)。
+管理员命令为 `/kairo notify <平台实例ID> <准确工号> <正文>`，仍只发送文本，不开放额外 HTTP 通知接口。语音及无 `name` 的卡片/图片/文件工具发当前会话；卡片和附件带 `name` 时共用管理员姓名通知与编号选择，在当前 Kairo 实例内推送员工私聊，不允许模型指定实例、会话、UID 或工号。图片/文件的宿主 `path` 仅管理员可用，默认转发当前消息对应类型附件。通讯超时/断线且未确认成功的 Python 发送结果额外保留 `code`，不重发。工具使用及网络前提见主说明，内部字段见 [协议 v2](PROTOCOL.md)。
 
 ## API 依据
 
@@ -123,7 +126,7 @@ Git HTTPS直连推送两次不可达，读取现有Windows系统代理后使用�
 
 ## 按需语音与原生卡片工具（方案 B）
 
-`main.py/tools.py` 注册四个明确工具；请求级仅移除非 Kairo 的本插件工具，保留人格及用户停用选择。工具从真实原始事件取得目标和群发送者，发送前复查现有名单。语音经公共 `send_voice_text` 与新增 `voice_text` 请求直接进入 Driver；三类卡片经公共 `send_card` 复用既有 Json 字段、完整卡片预检和原生分派。四种工具在首次 await 前保存操作 ID，首次尝试记录在事件中，不给工具实例保存会话，不建立第二份持久发送记录。
+最初的 `main.py/tools.py` 注册四个明确发送工具，图片文件扩展后为六个；请求级仅移除非 Kairo 的本插件工具，保留人格及用户停用选择。当前会话工具从真实原始事件取得目标和群发送者，发送前复查现有名单。语音经公共 `send_voice_text` 与 `voice_text` 请求直接进入 Driver；三类卡片经公共 `send_card` 复用既有 Json 字段、完整卡片预检和原生分派；附件经 `prepare_media` 缓存后由 `send_media` 发送。发送工具在首次 await 前保存操作 ID，首次尝试记录在事件中，不给工具实例保存会话，不建立第二份持久发送记录。
 
 只有确认 sent 才返回 None 结束默认主聊天 Agent 下一轮续答；失败/unknown 返回原生原因与意图 ID。真实 ToolLoopAgentRunner + FunctionToolExecutor 验证同批重复只有一次提交、成功不复述而失败继续解释。曾临时颠倒语音成功条件，三条相应回归确实失败，恢复后通过；删除了工具描述措辞与构造参数复制断言，没有通过弱化消费者断言使检查变绿。
 
@@ -225,4 +228,28 @@ Driver main `c4c9c677fa8fe3bfa5c4d2ab94505f1b5918efaf` 仅更换 SDK 依赖与�
 实际执行 `node scripts/prepare-driver.mjs`（远端固定检出）、`pnpm install --lockfile-only --offline`、`pnpm install --frozen-lockfile`，全部成功。锁文件仅变更固定 Driver 目录、SDK 版本/完整性及补丁标识，无其他传递依赖升级。`pnpm check` 构建及44项Node测试通过；设置 `ASTRBOT_SOURCE` 后，AstrBot虚拟环境 `python.exe -m pytest -q --tb=short` 全套286项通过，保留已有audioop弃用警告。Python代码和协议未变，本次未重复Ruff检查，也未运行上游Driver全套；上游README记录其全套受既有人员搜索定时器断言阻断，不将该记录声称为本次修复或通过。
 
 独立Node内联烟测从桥接实际安装的固定Driver解析到带补丁的 `node-edge-tts@1.2.11`，显式使用本机既有 `http://127.0.0.1:7897` 进程代理合成“您好，这是一条语音合成验证。”，获得19296字节MP3。通过同一Driver依赖的解码器得到24000Hz、2声道、3.216秒、RMS 0.1167773的有限采样音频；耗时1478毫秒，退出0，临时音频清理成功。这是本插件安装产物的真实服务验证，不仅依赖上游声明。没有连接CDP、安装Hook、调用聊天IPC、发送消息或重启生产服务；不冒充KK AMR编码、真实接收端播放或Linux真机验收。
+
+## 三类卡片跨会话推送
+
+三个卡片工具增加可选 `name`，由主插件注入同一个 `KairoNotifications`。保存完整卡片（包括业务摘要快照），选择工具不能修改内容；卡片与文本意图互相替换。当前会话和姓名路由共享同工具的事件尝试记录，避免同一事件改路由后第二次提交。跨会话权限、发起人/群及接收员工名单、UID/工号复查沿用现有通知边界。
+
+新增 `send_card_to_user` 贯穿 Python 传输允许列表和桥接解析/分派。Driver 补丁复用准确工号原生上下文、结构化卡片提交、正式回执关联及持久发送记录；不把卡片降为文本，不依赖现有会话或切换聊天窗口。定向成功后的日志和撤回使用确认后的正式会话。
+
+实际安装发现 pnpm 的目录 `file:` 依赖虽然记录补丁 hash，却跳过应用补丁，并与原始 vendor 文件硬链接；构建因此缺少新增 `targetLoginName` 类型。改为固定源码的标准归档依赖后，安装产物独立且正确应用补丁。两次带 prepack 重建的归档字节相同；随后执行 `node scripts/prepare-driver.mjs`、`pnpm install --frozen-lockfile`、`pnpm check` 通过，最终 62 项 Node 测试全部通过，包含真实 Driver renderer 脚本的原生 IPC 替身验证。未执行上游 Driver 全套或 Linux 真机检查。
+
+Python 全套 `python.exe -m pytest -q --tb=short` 为 321 项通过；首次联调暴露新 action 遗漏传输允许列表，修正后 12 项新增跨语言卡片场景及全套通过。`ruff check *.py tests`、`ruff format --check *.py tests` 通过，保留宿主已有 audioop 弃用警告。
+
+独立 `python.exe artifacts/tmp/directed-card-smoke.py` 使用真实 AstrBot、Python WebSocket/HTTP、编译后的桥接和 SQLite，验证重名选择后的首次公告卡片、已有私聊链接卡片及 unknown 业务卡片不重发，共 3 次原生 Fake 提交，全部定向 E044，未发来源群。只有 KK9 使用 Fake；未发送真实员工消息、重启生产服务或验证实际客户端卡片呈现。一次性脚本及隔离数据在验证后清理。
+
+## 图片文件跨会话推送
+
+新增 `kairo_send_image` 和 `kairo_send_file`，共享现有通知管理器与候选规则。不传姓名时发原会话；指定姓名仅管理员可用。输入为当前消息对应类型的 `attachment_index`（默认 1），或仅管理员可指定的已有宿主 `path`，两者互斥。模型工具不能提供任意 URL 或选择消息的新内容来替换附件。
+
+`prepare_media` 在查人前通过既有 `BridgeServer.add_file` 保存字节快照；待选意图保留 `{kind,file_id,name}`，所以原文件变更/删除、选择消息带其他附件都不改变要发送的内容。UID/准确工号复查与当前名单沿用原路径，不另建媒体审批状态或发送数据库。
+
+`send_media_to_user` 贯穿 Python 允许列表、严格协议解析、鉴权 HTTP 下载及 Driver 分派。Driver 补丁把图片/文件加入准确工号目标，沿用原生首次会话上下文、回执关联、文件传输租约和取消清理；定向成功后的日志和撤回绑定确认的正式会话。其他发送方法不接受此目标，不预发文本或切换窗口。标准 `pnpm patch` 因未发布包的注册表 404 失败，改用一次性本机注册表暴露同一未修改 vendor 归档完成标准 patch/patch-commit，临时文件和服务均清理；锁文件不含临时地址，原始 vendor 不改动。
+
+实际执行：`pnpm install --frozen-lockfile` 成功；`pnpm check` 构建及 86 项 Node 测试通过，包含真实 Driver 生成 renderer 脚本、字节传输、首次/已有会话、身份拒绝、unknown 防重、取消和迟到读取清理；AstrBot 虚拟环境 `python.exe -m pytest -q --tb=short` 全套 357 项通过，包含 8 项新增跨语言媒体场景；`ruff check *.py tests`、`ruff format --check *.py tests` 通过（21 文件），保留宿主已有 audioop 弃用警告。
+
+独立 `python.exe artifacts/tmp/directed-media-smoke.py` 运行真实 AstrBot 事件/已注册工具、编译桥接、HTTP/WS 和 SQLite：重名选择后首次私聊图片仍为源文件变更前的字节，已有私聊发送原名文件，unknown 文件重复调用没有重发，共 3 次 Fake 原生提交，持久状态为 sent/sent/unknown。仅 KK9 使用 Fake，未发送真实消息、重启服务或声称真实接收端呈现通过；一次性脚本及隔离数据验证后清理。
 

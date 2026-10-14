@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -269,6 +269,251 @@ test('RPC公开查询、三类卡片、图片文件语音和首次工号通知�
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('首次工号卡片无需已有私聊或预备文本，三类载荷原样发送并防止 unknown 重发与换收件人', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'kairo-directed-cards-'));
+  const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+  await new Promise<void>((resolve) => server.once('listening', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const config = parseConfig({ serverUrl: `http://127.0.0.1:${address.port}`, token: 'x'.repeat(32), expectedUserId: '1', reconnectDelayMs: 100 }, root);
+  const driver = new FakeKK9Driver();
+  driver.setCurrentUserId('1');
+  driver.setEmployees([{ id: '2', loginName: '00AbC', name: '首次联系员工', updatedAt: 1, raw: { id: '2', login_name: '00AbC' } }]);
+  const readSessions = driver.getSessions.bind(driver);
+  driver.getSessions = async () => { throw new Error('按工号卡片不能依赖会话列表'); };
+  const responses = new Map<string, any>();
+  let peer: WebSocket | undefined, ready = false;
+  server.on('connection', (socket) => {
+    peer = socket;
+    socket.on('message', (raw) => {
+      const value = JSON.parse(raw.toString());
+      if (value.type === 'hello') socket.send(JSON.stringify({ type: 'ready', version: 2 }));
+      else if (value.type === 'response') responses.set(value.id, value);
+    });
+  });
+  const bridge = new Bridge(config, () => driver, (_level, text) => { if (text.startsWith('AstrBot 桥接已连接')) ready = true; });
+  const running = bridge.run();
+  let counter = 0;
+  const rpc = async (action: string, params: Record<string, unknown>) => {
+    const id = `directed-card-${++counter}`;
+    peer!.send(JSON.stringify({ type: 'request', id, action, params }));
+    await until(() => responses.has(id));
+    return responses.get(id);
+  };
+  const cards = [
+    { kind: 'app_card', card: { title: '通知', content: '<p>正文</p>', linkUrl: '/app', pcAppCode: 'real-app' }, call: 'appMessage' },
+    { kind: 'url_card', card: { title: '链接', summary: '摘要', linkUrl: 'https://example.com', picUrl: 'https://example.com/image.png' }, call: 'urlCard' },
+    { kind: 'biz_card', card: { title: '业务', content: '正文', bizType: 2, bizUrl: '/detail?id=1', summary: ['一', '二'] }, call: 'bizMessage' },
+  ];
+  try {
+    await until(() => ready);
+    for (const item of cards) {
+      for (const status of ['sent', 'unknown']) {
+        driver.setSessions([]);
+        assert.deepEqual(await readSessions(), []);
+        driver.setSendBehavior(status === 'sent' ? { mode: 'success' } : { mode: 'post_trigger_timeout' });
+        const operation_id = `${item.kind}-${status}`;
+        const params = { operation_id, login_name: ' 00AbC ', kind: item.kind, card: item.card };
+        const before = driver.recordedCalls.length;
+        const response = await rpc('send_card_to_user', params);
+        assert.equal(response.ok, true);
+        assert.equal(response.result.status, status);
+        assert.equal(response.result.operationId, operation_id);
+        assert.equal(driver.recordedCalls.length, before + 1);
+        const call = driver.recordedCalls.at(-1)!;
+        assert.equal(call.type, item.call);
+        assert.deepEqual(call.payload, item.card);
+        assert.deepEqual(call.options, { targetLoginName: '00AbC', operationId: operation_id });
+        if (status === 'sent') {
+          assert.match(response.result.sessionId, /^[1-9]\d*$/);
+          const session = (await readSessions()).find((entry) => entry.id === response.result.sessionId);
+          assert.equal(session?.type, 'private');
+          assert.equal(session?.receiverId, '2');
+        } else assert.equal(response.result.sessionId, undefined);
+        driver.setSendBehavior({ mode: 'success', messageId: 'must-not-resubmit' });
+        assert.deepEqual((await rpc('send_card_to_user', { ...params, login_name: '00AbC' })).result, response.result);
+        assert.deepEqual((await rpc('get_send_status', { operation_id })).result, response.result);
+        const mismatch = await rpc('send_card_to_user', { ...params, login_name: '00abc' });
+        assert.equal(mismatch.ok, false);
+        assert.equal(mismatch.error.code, 'SEND_ERROR');
+        assert.match(mismatch.error.message, /fingerprint/);
+        assert.equal(driver.recordedCalls.length, before + 1);
+      }
+    }
+    assert.equal(driver.recordedCalls.length, 6);
+    assert.ok(driver.recordedCalls.every((call) => ['appMessage', 'urlCard', 'bizMessage'].includes(call.type)));
+  } finally {
+    bridge.stop(); await running;
+    for (const socket of server.clients) socket.terminate();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('首次工号图片文件下载原始字节与文件名，不依赖私聊或预备文本且防止重复与 unknown 重发', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'kairo-directed-media-'));
+  const token = 'x'.repeat(32);
+  const downloads: string[] = [];
+  const files = new Map<string, Buffer>();
+  const http = createServer((request, response) => {
+    assert.equal(request.headers.authorization, `Bearer ${token}`);
+    downloads.push(request.url!);
+    const bytes = files.get(request.url!);
+    assert.ok(bytes, 'only the selected stable file_id is downloaded');
+    response.end(bytes);
+  });
+  const server = new WebSocketServer({ server: http });
+  await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve));
+  const address = http.address();
+  assert.ok(address && typeof address !== 'string');
+  const config = parseConfig({ serverUrl: `http://127.0.0.1:${address.port}`, token, expectedUserId: '1', reconnectDelayMs: 100 }, root);
+  const driver = new FakeKK9Driver();
+  driver.setCurrentUserId('1');
+  driver.setEmployees([
+    { id: '2', loginName: '00AbC', name: '首次联系员工', updatedAt: 1, raw: { id: '2', login_name: '00AbC' } },
+    { id: '3', loginName: '00abc', name: '其他员工', updatedAt: 1, raw: { id: '3', login_name: '00abc' } },
+  ]);
+  const readSessions = driver.getSessions.bind(driver);
+  driver.getSessions = async () => { throw new Error('按工号媒体不能依赖会话列表'); };
+  const responses = new Map<string, any>();
+  let peer: WebSocket | undefined, ready = false;
+  server.on('connection', (socket) => {
+    peer = socket;
+    socket.on('message', (raw) => {
+      const value = JSON.parse(raw.toString());
+      if (value.type === 'hello') socket.send(JSON.stringify({ type: 'ready', version: 2 }));
+      else if (value.type === 'response') responses.set(value.id, value);
+    });
+  });
+  const bridge = new Bridge(config, () => driver, (_level, text) => { if (text.startsWith('AstrBot 桥接已连接')) ready = true; });
+  const running = bridge.run();
+  let counter = 0;
+  const rpc = async (action: string, params: Record<string, unknown>) => {
+    const id = `directed-media-${++counter}`;
+    peer!.send(JSON.stringify({ type: 'request', id, action, params }));
+    await until(() => responses.has(id));
+    return responses.get(id);
+  };
+  try {
+    await until(() => ready);
+    let fileIndex = 0;
+    for (const kind of ['image', 'file']) {
+      for (const status of ['sent', 'unknown']) {
+        driver.setSessions([]);
+        assert.deepEqual(await readSessions(), []);
+        driver.setSendBehavior(status === 'sent' ? { mode: 'success' } : { mode: 'post_trigger_timeout' });
+        const file_id = (++fileIndex).toString(16).padStart(32, '0');
+        const bytes = Buffer.from([0, 255, fileIndex, 128, 13, 10, 42]);
+        files.set(`/files/${file_id}`, bytes);
+        const operation_id = `${kind}-${status}`;
+        const name = kind === 'image' ? '原始 图片.png' : '原始 文件.bin';
+        const params = { operation_id, login_name: ' 00AbC ', kind, file_id, name };
+        const before = driver.recordedCalls.length;
+        const response = await rpc('send_media_to_user', params);
+        assert.equal(response.ok, true);
+        assert.equal(response.result.status, status);
+        assert.equal(response.result.operationId, operation_id);
+        assert.equal(driver.recordedCalls.length, before + 1);
+        const call = driver.recordedCalls.at(-1)!;
+        assert.equal(call.type, kind);
+        assert.equal(typeof call.payload, 'string');
+        assert.ok(typeof call.payload === 'string');
+        assert.equal(basename(call.payload), name);
+        assert.deepEqual(await readFile(call.payload), bytes);
+        assert.deepEqual(call.options, { targetLoginName: '00AbC', operationId: operation_id });
+        if (status === 'sent') {
+          assert.match(response.result.sessionId, /^[1-9]\d*$/);
+          const session = (await readSessions()).find((entry) => entry.id === response.result.sessionId);
+          assert.equal(session?.type, 'private');
+          assert.equal(session?.receiverId, '2');
+        } else assert.equal(response.result.sessionId, undefined);
+        driver.setSendBehavior({ mode: 'success', messageId: 'must-not-resubmit' });
+        assert.deepEqual((await rpc('send_media_to_user', { ...params, login_name: '00AbC' })).result, response.result);
+        assert.deepEqual((await rpc('get_send_status', { operation_id })).result, response.result);
+        const mismatch = await rpc('send_media_to_user', { ...params, login_name: '00abc' });
+        assert.equal(mismatch.ok, false);
+        assert.equal(mismatch.error.code, 'SEND_ERROR');
+        assert.match(mismatch.error.message, /fingerprint/);
+        assert.equal(driver.recordedCalls.length, before + 1);
+      }
+    }
+    assert.equal(driver.recordedCalls.length, 4);
+    assert.ok(driver.recordedCalls.every((call) => call.type === 'image' || call.type === 'file'));
+    assert.deepEqual(downloads, [...files.keys()]);
+  } finally {
+    bridge.stop(); await running;
+    for (const socket of server.clients) socket.terminate();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await new Promise<void>((resolve) => http.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+for (const kind of ['image', 'file']) {
+  test(`工号 ${kind} 下载被拒绝或下载期间切换账号时绝不发送`, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kairo-directed-media-denied-'));
+    const token = 'x'.repeat(32);
+    const deniedId = 'd'.repeat(32), changedId = 'e'.repeat(32);
+    const bytes = Buffer.from([0, 255, 128, 13, 10, 42]);
+    const driver = new FakeKK9Driver();
+    driver.setCurrentUserId('1');
+    driver.setEmployees([{ id: '2', loginName: '00AbC', name: '首次联系员工', updatedAt: 1, raw: { id: '2', login_name: '00AbC' } }]);
+    driver.getSessions = async () => { throw new Error('不能读取会话列表'); };
+    const downloads: string[] = [];
+    const http = createServer((request, response) => {
+      assert.equal(request.headers.authorization, `Bearer ${token}`);
+      downloads.push(request.url!);
+      if (request.url === `/files/${deniedId}`) {
+        response.writeHead(403);
+        response.end('denied');
+      } else {
+        assert.equal(request.url, `/files/${changedId}`);
+        driver.setCurrentUserId('999');
+        response.end(bytes);
+      }
+    });
+    const server = new WebSocketServer({ server: http });
+    await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve));
+    const address = http.address();
+    assert.ok(address && typeof address !== 'string');
+    const config = parseConfig({ serverUrl: `http://127.0.0.1:${address.port}`, token, expectedUserId: '1', reconnectDelayMs: 100 }, root);
+    const responses = new Map<string, any>();
+    let peer: WebSocket | undefined, ready = false;
+    server.on('connection', (socket) => {
+      peer = socket;
+      socket.on('message', (raw) => {
+        const value = JSON.parse(raw.toString());
+        if (value.type === 'hello') socket.send(JSON.stringify({ type: 'ready', version: 2 }));
+        else if (value.type === 'response') responses.set(value.id, value);
+      });
+    });
+    const bridge = new Bridge(config, () => driver, (_level, text) => { if (text.startsWith('AstrBot 桥接已连接')) ready = true; });
+    const running = bridge.run();
+    try {
+      await until(() => ready);
+      const params = { operation_id: `${kind}-denied`, login_name: '00AbC', kind, file_id: deniedId, name: '原始附件.bin' };
+      peer!.send(JSON.stringify({ type: 'request', id: 'denied', action: 'send_media_to_user', params }));
+      await until(() => responses.has('denied'));
+      assert.deepEqual(responses.get('denied').error, { code: 'FILE_DOWNLOAD_FAILED', message: '附件下载失败 (HTTP 403)' });
+      assert.equal(responses.get('denied').ok, false);
+      assert.equal(driver.recordedCalls.length, 0);
+      peer!.send(JSON.stringify({ type: 'request', id: 'changed', action: 'send_media_to_user', params: { ...params, operation_id: `${kind}-changed`, file_id: changedId } }));
+      await until(() => peer!.readyState === WebSocket.CLOSED);
+      bridge.stop(); await running;
+      assert.deepEqual(await readFile(join(config.dataDir, 'attachments', changedId, params.name)), bytes);
+      assert.deepEqual(downloads, [`/files/${deniedId}`, `/files/${changedId}`]);
+      assert.equal(driver.recordedCalls.length, 0, 'identity must be rechecked after bytes are downloaded');
+      assert.equal(responses.has('changed'), false, 'identity mismatch terminates the authenticated connection');
+    } finally {
+      bridge.stop(); await running;
+      for (const socket of server.clients) socket.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => http.close(() => resolve()));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test('文本语音无附件 HTTP 依赖，原生结果及既有发送记录防重并拒绝更换文本', async () => {
   const root = await mkdtemp(join(tmpdir(), 'kairo-voice-text-'));

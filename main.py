@@ -9,6 +9,8 @@ from .tools import (
     KAIRO_TOOL_NAMES,
     KairoSendAppCardTool,
     KairoSendBizCardTool,
+    KairoSendFileTool,
+    KairoSendImageTool,
     KairoSendUrlCardTool,
     KairoSendVoiceTool,
     is_kairo_event,
@@ -26,9 +28,11 @@ class KairoPlugin(Star):
         notifications = KairoNotifications()
         tools = (
             KairoSendVoiceTool(),
-            KairoSendAppCardTool(),
-            KairoSendUrlCardTool(),
-            KairoSendBizCardTool(),
+            KairoSendAppCardTool(notifications),
+            KairoSendUrlCardTool(notifications),
+            KairoSendBizCardTool(notifications),
+            KairoSendImageTool(notifications),
+            KairoSendFileTool(notifications),
             KairoNotifyEmployeeTool(notifications),
             KairoSelectEmployeeTool(notifications),
         )

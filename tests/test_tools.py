@@ -22,6 +22,7 @@ from astrbot_plugin_kairo.client import KairoClient
 from astrbot_plugin_kairo.event import KairoMessageEvent
 from astrbot_plugin_kairo.main import KairoPlugin
 from astrbot_plugin_kairo.mapping import convert_message
+from astrbot_plugin_kairo.notifications import KairoNotifications
 from astrbot_plugin_kairo.policy import KairoAccessPolicy
 from astrbot_plugin_kairo.tools import (
     KAIRO_ADMIN_TOOL_NAMES,
@@ -137,6 +138,10 @@ def wrap(event, context=None):
     return ContextWrapper(AstrAgentContext(context=context or make_context(), event=event))
 
 
+def make_tool(constructor):
+    return constructor() if constructor is KairoSendVoiceTool else constructor(KairoNotifications())
+
+
 def test_real_tools_register_once_with_plugin_lifecycle_ownership():
     context = make_context()
     KairoPlugin(context)
@@ -151,9 +156,10 @@ def test_real_tools_register_once_with_plugin_lifecycle_ownership():
         parameters = schema["function"]["parameters"]
         jsonschema.Draft202012Validator.check_schema(parameters)
         assert parameters["additionalProperties"] is False
-        assert not (
-            {"target", "session", "path", "target_session_id"} & parameters["properties"].keys()
-        )
+        forbidden = {"target", "session", "target_session_id"}
+        if schema["function"]["name"] not in {"kairo_send_image", "kairo_send_file"}:
+            forbidden.add("path")
+        assert not (forbidden & parameters["properties"].keys())
 
 
 @pytest.mark.asyncio
@@ -165,7 +171,7 @@ async def test_real_client_sends_only_requested_output_to_original_event_target(
     event = make_event(boundary)
     event.session_id = "rewritten-context-session"
     event.unified_msg_origin = "other:GroupMessage:99999"
-    assert await tool_type().call(wrap(event), **args) is None
+    assert await make_tool(tool_type).call(wrap(event), **args) is None
     assert len(boundary.sends) == 1
     assert boundary.sends[0]["kind"] == kind
     assert boundary.sends[0]["target_session_id"] == "12345"
@@ -183,7 +189,9 @@ async def test_wrong_platform_or_forged_native_event_is_rejected(
     tool_type, args, kind, name, native
 ):
     boundary = NativeBoundary()
-    result = await tool_type().call(wrap(make_event(boundary, name=name, native=native)), **args)
+    result = await make_tool(tool_type).call(
+        wrap(make_event(boundary, name=name, native=native)), **args
+    )
     assert "Kairo" in result and "错误" in result
     assert boundary.sends == []
 
@@ -193,15 +201,15 @@ async def test_wrong_platform_or_forged_native_event_is_rejected(
 async def test_same_event_duplicate_and_concurrent_calls_submit_once(tool_type, args, kind):
     boundary = NativeBoundary(block=True)
     event = make_event(boundary)
-    first = asyncio.create_task(tool_type().call(wrap(event), **args))
+    first = asyncio.create_task(make_tool(tool_type).call(wrap(event), **args))
     await boundary.started.wait()
     # 不同工具实例也必须共享当前事件的尝试记录。
-    second = asyncio.create_task(tool_type().call(wrap(event), **args))
+    second = asyncio.create_task(make_tool(tool_type).call(wrap(event), **args))
     await asyncio.sleep(0)
     assert len(boundary.sends) == 1
     boundary.release.set()
     assert await asyncio.gather(first, second) == [None, None]
-    assert await tool_type().call(wrap(event), **args) is None
+    assert await make_tool(tool_type).call(wrap(event), **args) is None
     assert len(boundary.sends) == 1
 
 
@@ -212,7 +220,10 @@ async def test_tool_state_is_independent_across_events_and_capabilities():
     first, second = make_event(boundary), make_event(boundary)
     assert await voice.call(wrap(first), text="一") is None
     assert await voice.call(wrap(second), text="二") is None
-    assert await KairoSendAppCardTool().call(wrap(first), title="卡片", text="三") is None
+    assert (
+        await KairoSendAppCardTool(KairoNotifications()).call(wrap(first), title="卡片", text="三")
+        is None
+    )
     assert [send["kind"] for send in boundary.sends] == ["voice_text", "voice_text", "app_card"]
     assert len({send["operation_id"] for send in boundary.sends}) == 3
 
@@ -225,7 +236,7 @@ async def test_native_failures_preserve_operation_id_and_never_resubmit(
 ):
     boundary = NativeBoundary(status=status)
     event = make_event(boundary)
-    tool = tool_type()
+    tool = make_tool(tool_type)
     result = await tool.call(wrap(event), **args)
     assert status in result
     assert "原生拒绝或回执超时" in result
@@ -247,7 +258,7 @@ async def test_runtime_blacklist_change_is_rechecked_and_denial_is_not_retried(
     boundary = NativeBoundary()
     event = make_event(boundary, config)
     config["user_blacklist"].append("EmployeeA")
-    tool = tool_type()
+    tool = make_tool(tool_type)
     result = await tool.call(wrap(event), **args)
     assert "ACCESS_DENIED" in result
     assert "黑名单" in result
@@ -263,7 +274,7 @@ async def test_runtime_blacklist_change_is_rechecked_and_denial_is_not_retried(
 async def test_bridge_errors_remain_errors_and_do_not_retry(tool_type, args, kind):
     boundary = NativeBoundary(error=BridgeError("DISCONNECTED", "桥接连接已断开"))
     event = make_event(boundary)
-    tool = tool_type()
+    tool = make_tool(tool_type)
     result = await tool.call(wrap(event), **args)
     assert "DISCONNECTED" in result and "桥接连接已断开" in result
     assert await tool.call(wrap(event), **args) == result
@@ -278,7 +289,10 @@ async def test_app_card_escapes_html_and_preserves_line_breaks_and_plain_title()
         "text": "<b>&\"'\r\n下一行\n末行",
         "linkUrl": "https://example.org?a=1&b=2",
     }
-    assert await KairoSendAppCardTool().call(wrap(make_event(boundary)), **args) is None
+    assert (
+        await KairoSendAppCardTool(KairoNotifications()).call(wrap(make_event(boundary)), **args)
+        is None
+    )
     assert boundary.sends[0]["card"] == {
         "title": args["title"],
         "content": "&lt;b&gt;&amp;&quot;&#x27;<br>下一行<br>末行",
@@ -291,7 +305,7 @@ async def test_url_and_biz_cards_preserve_plain_contract_and_existing_target():
     boundary = NativeBoundary()
     event = make_event(boundary)
     assert (
-        await KairoSendUrlCardTool().call(
+        await KairoSendUrlCardTool(KairoNotifications()).call(
             wrap(event),
             title="链接",
             summary="<纯文本>\n说明",
@@ -301,7 +315,7 @@ async def test_url_and_biz_cards_preserve_plain_contract_and_existing_target():
         is None
     )
     assert (
-        await KairoSendBizCardTool().call(
+        await KairoSendBizCardTool(KairoNotifications()).call(
             wrap(event),
             title="日程",
             text="<纯文本>\n正文",
@@ -352,7 +366,7 @@ async def test_url_and_biz_cards_preserve_plain_contract_and_existing_target():
 )
 async def test_local_invalid_arguments_fail_without_native_submission(tool, args):
     boundary = NativeBoundary()
-    result = await tool().call(wrap(make_event(boundary)), **args)
+    result = await make_tool(tool).call(wrap(make_event(boundary)), **args)
     assert "错误" in result
     assert boundary.sends == []
 
@@ -399,7 +413,7 @@ async def test_default_agent_stops_after_confirmed_send_but_explains_failure(
 ):
     boundary = NativeBoundary(status=status)
     event = make_event(boundary)
-    tool = tool_type()
+    tool = make_tool(tool_type)
     model_calls = 0
 
     async def text_chat(**kwargs):
@@ -438,7 +452,7 @@ async def test_cancelled_tool_wait_retains_original_intent_without_resubmission(
 ):
     boundary = NativeBoundary(block=True)
     event = make_event(boundary)
-    tool = tool_type()
+    tool = make_tool(tool_type)
     pending = asyncio.create_task(tool.call(wrap(event), **args))
     await boundary.started.wait()
     operation_id = boundary.sends[0]["operation_id"]
@@ -467,7 +481,7 @@ async def test_group_whitelist_change_before_tool_execution_blocks_output(tool_t
     boundary = NativeBoundary()
     event = make_event(boundary, config)
     config["enable_group_whitelist"] = True
-    result = await tool_type().call(wrap(event), **args)
+    result = await make_tool(tool_type).call(wrap(event), **args)
     assert "ACCESS_DENIED" in result and "白名单" in result
     assert boundary.sends == []
 
@@ -506,3 +520,33 @@ async def test_driver_tts_failure_remains_native_error_without_success_or_fallba
     assert f"operationId={boundary.sends[0]['operation_id']}" in result
     assert await tool.call(wrap(event), text="朗读") == result
     assert len(boundary.sends) == 1
+
+
+@pytest.mark.parametrize("directed_first", [False, True])
+async def test_same_card_tool_cannot_change_route_after_first_event_attempt(directed_first):
+    boundary = NativeBoundary()
+    event = make_event(boundary)
+    event.role = "admin"
+    tool = make_tool(KairoSendAppCardTool)
+    local = {"title": "公告", "text": "正文"}
+    directed = {**local, "name": "张三"}
+    # A directed attempt with no match is still the event's first intent.
+    original_request = boundary.request
+
+    async def request(action, params, *, timeout=None):
+        if action == "search_employees":
+            boundary.lookups.append(action)
+            return {"employees": [], "hasMore": False}
+        return await original_request(action, params, timeout=timeout)
+
+    boundary.request = request
+    first, second = (directed, local) if directed_first else (local, directed)
+    result = await tool.call(wrap(event), **first)
+    assert await tool.call(wrap(event), **second) == result
+    if directed_first:
+        assert boundary.sends == []
+    else:
+        assert [(send["kind"], send["target_session_id"]) for send in boundary.sends] == [
+            ("app_card", "12345")
+        ]
+        assert "search_employees" not in boundary.lookups

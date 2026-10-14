@@ -232,6 +232,24 @@ export class Bridge {
         return { profile: { ...profile, id: String(profile.id), loginName: loginName.trim() } };
       }
       case 'send_to_user': return driver.sendTextToUser(request.params.login_name, request.params.text, { operationId: request.params.operation_id });
+      case 'send_card_to_user': {
+        const params = request.params;
+        const options: SendOptions = { targetLoginName: params.login_name, operationId: params.operation_id };
+        switch (params.kind) {
+          case 'app_card': return driver.sendAppMessage(params.card, options);
+          case 'url_card': return driver.sendUrlCard(params.card, options);
+          case 'biz_card': return driver.sendBizMessage(params.card, options);
+        }
+      }
+      case 'send_media_to_user': {
+        const params = request.params;
+        const options: SendOptions = { targetLoginName: params.login_name, operationId: params.operation_id };
+        const file = await this.attachments.download(params.file_id, params.kind, params.name);
+        // 下载期间可能切换账号，发送前再次核对。
+        await this.verifyIdentity(driver);
+        if (this.invalid) throw new RequestError('DRIVER_DISCONNECTED', 'KK9 连接已失效');
+        return params.kind === 'image' ? driver.sendImage(file, options) : driver.sendFile(file, options);
+      }
       case 'send': {
         const params = request.params;
         const options: SendOptions = { targetSessionId: params.target_session_id, operationId: params.operation_id };

@@ -4,19 +4,24 @@ export class RequestError extends Error {
   constructor(public readonly code: string, message: string) { super(message); }
 }
 
+type CardParams =
+  | { kind: 'app_card'; card: KK9AppMsgOptions }
+  | { kind: 'url_card'; card: KK9UrlCardOptions }
+  | { kind: 'biz_card'; card: KK9BizMsgOptions };
 type SendTarget = { operation_id: string; target_session_id: string };
+type FileParams = { file_id: string; name?: string };
 export type SendParams = SendTarget & (
   | { kind: 'text'; text: string; mentions?: Array<{ uid: string; name: string }>; reply_to?: string }
   | { kind: 'voice_text'; text: string }
   | { kind: 'image' | 'file' | 'voice'; file_id: string; name?: string }
-  | { kind: 'app_card'; card: KK9AppMsgOptions }
-  | { kind: 'url_card'; card: KK9UrlCardOptions }
-  | { kind: 'biz_card'; card: KK9BizMsgOptions }
+  | CardParams
 );
 type Request<A extends string, P> = { type: 'request'; id: string; action: A; params: P };
 export type BridgeRequest =
   | Request<'send', SendParams>
   | Request<'send_to_user', { operation_id: string; login_name: string; text: string }>
+  | Request<'send_card_to_user', { operation_id: string; login_name: string } & CardParams>
+  | Request<'send_media_to_user', { operation_id: string; login_name: string; kind: 'image' | 'file' } & FileParams>
   | Request<'get_send_status', { operation_id: string }>
   | Request<'get_sessions', Record<string, never>>
   | Request<'get_user_profile', { user_id: string }>
@@ -39,6 +44,38 @@ function optionalCardText(raw: Record<string, unknown>, key: string): Record<str
   return raw[key] === undefined ? {} : { [key]: cardText(raw, key) };
 }
 
+function parseFile(params: Record<string, unknown>): FileParams {
+  const file_id = text(params.file_id, 'file_id');
+  if (!/^[a-f0-9]{32}$/.test(file_id)) throw new RequestError('INVALID_REQUEST', 'file_id 无效');
+  return { file_id, ...(params.name !== undefined ? { name: text(params.name, 'name') } : {}) };
+}
+
+function parseCard(kind: unknown, value: unknown): CardParams {
+  switch (kind) {
+    case 'app_card': {
+      const card = object(value, 'card');
+      fields(card, ['title', 'content', 'linkUrl', 'pcAppCode'], 'card');
+      return { kind, card: { title: cardText(card, 'title'), content: cardText(card, 'content'), ...optionalCardText(card, 'linkUrl'), ...optionalCardText(card, 'pcAppCode') } };
+    }
+    case 'url_card': {
+      const card = object(value, 'card');
+      fields(card, ['title', 'summary', 'linkUrl', 'picUrl'], 'card');
+      return { kind, card: { title: cardText(card, 'title'), summary: cardText(card, 'summary'), linkUrl: cardText(card, 'linkUrl'), ...optionalCardText(card, 'picUrl') } };
+    }
+    case 'biz_card': {
+      const card = object(value, 'card');
+      fields(card, ['title', 'content', 'summary', 'bizUrl', 'bizType'], 'card');
+      if (card.bizType !== 1 && card.bizType !== 2) throw new RequestError('INVALID_REQUEST', 'card.bizType 必须为 1 或 2');
+      const bizUrl = cardText(card, 'bizUrl');
+      if (!bizUrl.startsWith('/') || bizUrl.startsWith('//')) throw new RequestError('INVALID_REQUEST', 'card.bizUrl 必须为相对路径');
+      const summary = card.summary;
+      if (summary !== undefined && (!Array.isArray(summary) || summary.some((item) => typeof item !== 'string'))) throw new RequestError('INVALID_REQUEST', 'card.summary 必须为字符串数组');
+      return { kind, card: { title: cardText(card, 'title'), content: cardText(card, 'content'), bizUrl, bizType: card.bizType, ...(summary !== undefined ? { summary: summary as string[] } : {}) } };
+    }
+    default: throw new RequestError('UNSUPPORTED_MESSAGE', '仅支持 app_card、url_card、biz_card');
+  }
+}
+
 export function parseRequest(value: unknown): BridgeRequest {
   const raw = object(value, '请求');
   const id = text(raw.id, 'id');
@@ -56,7 +93,7 @@ export function parseRequest(value: unknown): BridgeRequest {
     fields(params, ['keyword'], 'params');
     return { type: 'request', id, action: raw.action, params: { keyword: text(params.keyword, 'keyword') } };
   }
-  if (!['send', 'send_to_user', 'get_send_status'].includes(String(raw.action))) throw new RequestError('UNSUPPORTED_ACTION', '仅支持 send、send_to_user、get_send_status、get_sessions、get_user_profile 和 search_employees');
+  if (!['send', 'send_to_user', 'send_card_to_user', 'send_media_to_user', 'get_send_status'].includes(String(raw.action))) throw new RequestError('UNSUPPORTED_ACTION', '仅支持 send、send_to_user、send_card_to_user、send_media_to_user、get_send_status、get_sessions、get_user_profile 和 search_employees');
   const operation_id = text(params.operation_id, 'operation_id');
   if (raw.action === 'get_send_status') {
     fields(params, ['operation_id'], 'params');
@@ -65,6 +102,17 @@ export function parseRequest(value: unknown): BridgeRequest {
   if (raw.action === 'send_to_user') {
     fields(params, ['operation_id', 'login_name', 'text'], 'send_to_user');
     return { type: 'request', id, action: raw.action, params: { operation_id, login_name: text(params.login_name, 'login_name').trim(), text: text(params.text, 'text', 128_000) } };
+  }
+  if (raw.action === 'send_card_to_user') {
+    fields(params, ['operation_id', 'login_name', 'kind', 'card'], 'send_card_to_user');
+    const login_name = text(params.login_name, 'login_name').trim();
+    return { type: 'request', id, action: raw.action, params: { operation_id, login_name, ...parseCard(params.kind, params.card) } };
+  }
+  if (raw.action === 'send_media_to_user') {
+    fields(params, ['operation_id', 'login_name', 'kind', 'file_id', 'name'], 'send_media_to_user');
+    const login_name = text(params.login_name, 'login_name').trim();
+    if (params.kind !== 'image' && params.kind !== 'file') throw new RequestError('UNSUPPORTED_MESSAGE', '按工号媒体发送仅支持 image、file');
+    return { type: 'request', id, action: raw.action, params: { operation_id, login_name, kind: params.kind, ...parseFile(params) } };
   }
   const target_session_id = text(params.target_session_id, 'target_session_id');
   if (!/^[1-9]\d*$/.test(target_session_id) || !Number.isSafeInteger(Number(target_session_id))) throw new RequestError('INVALID_REQUEST', 'target_session_id 必须为原生正整数会话 ID 字符串');
@@ -94,36 +142,12 @@ export function parseRequest(value: unknown): BridgeRequest {
     }
     case 'image': case 'file': case 'voice': {
       fields(params, ['operation_id', 'target_session_id', 'kind', 'file_id', 'name'], 'send');
-      const file_id = text(params.file_id, 'file_id');
-      if (!/^[a-f0-9]{32}$/.test(file_id)) throw new RequestError('INVALID_REQUEST', 'file_id 无效');
-      result = { ...target, kind: params.kind, file_id };
-      if (params.name !== undefined) result.name = text(params.name, 'name');
+      result = { ...target, kind: params.kind, ...parseFile(params) };
       break;
     }
-    case 'app_card': {
+    case 'app_card': case 'url_card': case 'biz_card': {
       fields(params, ['operation_id', 'target_session_id', 'kind', 'card'], 'send');
-      const card = object(params.card, 'card');
-      fields(card, ['title', 'content', 'linkUrl', 'pcAppCode'], 'card');
-      result = { ...target, kind: params.kind, card: { title: cardText(card, 'title'), content: cardText(card, 'content'), ...optionalCardText(card, 'linkUrl'), ...optionalCardText(card, 'pcAppCode') } };
-      break;
-    }
-    case 'url_card': {
-      fields(params, ['operation_id', 'target_session_id', 'kind', 'card'], 'send');
-      const card = object(params.card, 'card');
-      fields(card, ['title', 'summary', 'linkUrl', 'picUrl'], 'card');
-      result = { ...target, kind: params.kind, card: { title: cardText(card, 'title'), summary: cardText(card, 'summary'), linkUrl: cardText(card, 'linkUrl'), ...optionalCardText(card, 'picUrl') } };
-      break;
-    }
-    case 'biz_card': {
-      fields(params, ['operation_id', 'target_session_id', 'kind', 'card'], 'send');
-      const card = object(params.card, 'card');
-      fields(card, ['title', 'content', 'summary', 'bizUrl', 'bizType'], 'card');
-      if (card.bizType !== 1 && card.bizType !== 2) throw new RequestError('INVALID_REQUEST', 'card.bizType 必须为 1 或 2');
-      const bizUrl = cardText(card, 'bizUrl');
-      if (!bizUrl.startsWith('/') || bizUrl.startsWith('//')) throw new RequestError('INVALID_REQUEST', 'card.bizUrl 必须为相对路径');
-      const summary = card.summary;
-      if (summary !== undefined && (!Array.isArray(summary) || summary.some((item) => typeof item !== 'string'))) throw new RequestError('INVALID_REQUEST', 'card.summary 必须为字符串数组');
-      result = { ...target, kind: params.kind, card: { title: cardText(card, 'title'), content: cardText(card, 'content'), bizUrl, bizType: card.bizType, ...(summary !== undefined ? { summary: summary as string[] } : {}) } };
+      result = { ...target, ...parseCard(params.kind, params.card) };
       break;
     }
     default: throw new RequestError('UNSUPPORTED_MESSAGE', '仅支持 text、voice_text、image、file、voice、app_card、url_card、biz_card');

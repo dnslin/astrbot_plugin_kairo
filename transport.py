@@ -255,6 +255,8 @@ class BridgeServer:
         if action not in {
             "send",
             "send_to_user",
+            "send_card_to_user",
+            "send_media_to_user",
             "get_send_status",
             "get_sessions",
             "get_user_profile",

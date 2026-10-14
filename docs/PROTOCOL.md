@@ -49,12 +49,18 @@ Python 完成事件提交或名单拒绝后返回 `{"type":"ack","event_id":"...
 | --- | --- | --- |
 | `send` | `operation_id`, `target_session_id` 和下表消息字段 | 原生发送结果 |
 | `send_to_user` | `operation_id`, `login_name`, `text` | 首次或已有私聊文本结果；成功包含正式 `sessionId` |
+| `send_card_to_user` | `operation_id`, `login_name`, `kind`, `card` | 三类卡片的首次或已有私聊结果；成功包含正式 `sessionId` |
+| `send_media_to_user` | `operation_id`, `login_name`, `kind`, `file_id`；可选 `name` | 图片/文件首次或已有私聊结果；成功包含正式 `sessionId` |
 | `get_send_status` | `operation_id` | 原意图状态，不触发发送 |
 | `get_sessions` | `{}` | `{sessions:[...]}`，保留 `id/type/nativeType/receiverId` |
 | `get_user_profile` | `user_id` | `{profile:员工档案或null}`；工号必须来自原生 `login_name`，不能用 UID 回退值代替 |
 | `search_employees` | 非空 `keyword`，最多 256 UTF-16 单位 | `{employees:[{id,name,loginName,departmentPaths}],hasMore:false}`，完整的当前账号可见搜索结果 |
 
 `login_name` 仅去首尾空白，区分大小写。查询不要求 `operation_id`，不开放任意 IPC 或全组织同步。所有请求先核对实际登录 UID。
+
+`send_card_to_user` 的 `kind` 只允许 `app_card`、`url_card`、`biz_card`，`card` 沿用下表字段与完整校验。桥接调用对应 Driver 卡片方法，传入准确 `targetLoginName` 和 `operationId`；不接受会话覆盖、引用或提及，不依赖会话列表，不预发文本。首次发送使用 Driver 已有的准确工号原生上下文，由本次业务回执确认正式私聊会话。
+
+`send_media_to_user` 的 `kind` 只允许 `image` 或 `file`，`file_id` 为 32 位小写十六进制缓存标识，`name` 为可选非空文件名。只通过鉴权 `/files/{file_id}` 下载，不接收本地路径、URL、会话覆盖、引用或提及。下载后再次核对账号，分别调用 Driver `sendImage` / `sendFile`，只传准确 `targetLoginName` 与 `operationId`。首次私聊由本次附件发送确认正式会话，不预发文本。
 
 `search_employees` 由 Driver 读完分页、按 UID 去重后才返回；失败或超时不返回部分成功，桥接不截断列表。`id` 为字符串 UID；`name`、真实 `loginName`、所有可见 `departmentPaths` 均可能为 `null`，不以 UID 或展示字段补工号。没有匹配返回空数组；单个可见结果不代表全公司唯一。该操作不创建会话、不发送、不标已读，不接受分页、发送目标或任意 IPC 参数。Driver 默认整轮期限 30 秒，Python 等待 35 秒以接收上游错误；桥接串行排队仍计入请求等待。
 
@@ -88,13 +94,13 @@ Python 完成事件提交或名单拒绝后返回 `{"type":"ack","event_id":"...
 
 SQLite 在触发发送前声明意图。同一 ID 的目标、工号、内容、类型、引用或提及不同会冲突；相同意图重复调用不会再次触发，前置失败也不重新提交。发送记录保留正式会话和原生回执，迟到 `unknown` 不覆盖 `sent/failed`。
 
-Python 请求超时或断线后不重新发送，只查询一次原 `operation_id`。仍未知则保留操作 ID 和原因；`notify_employee`、`send_voice_text`、单卡片 `send_card` 返回结果供调用方处理，`send_chain` 抛出含 `result` 的 `BridgeError`。四类按需工具在提交前保存操作 ID，等待取消后仍能核查原意图。协议不保证进程重启后的入站补偿或端到端恰好一次处理。
+Python 请求超时或断线后不重新发送，只查询一次原 `operation_id`。仍未知则保留操作 ID 和原因；`notify_employee`、`send_voice_text`、`send_card`、`send_media` 返回结果供调用方处理，`send_chain` 抛出含 `result` 的 `BridgeError`。六类按需发送工具在提交前保存操作 ID，等待取消后仍能核查原意图。协议不保证进程重启后的入站补偿或端到端恰好一次处理。
 
 员工和群黑白名单由 Python 公共客户端统一执行；Bridge RPC 是内部传输，不是另一个面向插件的无名单发送 API。管理员指令、事件回复和主动发送都经过该客户端。
 
-模型工具必须使用真实 `KairoMessageEvent`。四个语音/卡片工具固定使用事件原始会话与发送者；`kairo_notify_employee(name,text)`、`kairo_select_employee(choice)` 仅向真实管理员开放，不接受平台、UID、工号、会话参数。非 Kairo 请求移除本插件全部工具，非管理员 Kairo 请求额外移除通知工具；不修改全局启停或补回人格移除的工具。每事件的一次尝试不替代 Driver 的持久发送记录。
+模型工具必须使用真实 `KairoMessageEvent`。语音工具及未传 `name` 的卡片/图片/文件工具使用事件原始会话与发送者；卡片/图片/文件传 `name` 时，仅真实管理员能按姓名跨会话推送。`kairo_notify_employee(name,text)`、`kairo_select_employee(choice)` 也仅向真实管理员开放，不接受平台、UID、工号、会话参数。非 Kairo 请求移除本插件全部工具，非管理员 Kairo 请求额外移除通知/选择工具；卡片和附件保留当前会话能力，执行时拒绝非管理员传 `name`，图片/文件另拒绝非管理员传宿主 `path`。不修改全局启停或补回人格移除的工具。同一发送工具在同一事件中不能通过增删 `name` 再次尝试另一目标；每事件的一次尝试不替代 Driver 的持久发送记录。
 
-姓名通知仅在一个完整搜索候选且姓名完全一致时自动发送。其余结果按序号展示真实身份和部门；下一条原生用户消息的明确数字选择必须与 `choice` 一致，不能由模型代选。候选及正文按平台实例、原生会话和发起人隔离，并绑定 UID/工号快照；新意图替换旧意图，选择后消耗，重载后清空。发送前通过 `get_user_profile` 重查 UID 和真实工号，再走共用名单的 `send_to_user`；缺失、变化或拒绝均不改投，不重新提交未知意图。原生事件高精度接收顺序拒绝同消息及候选产生前的选择，避免 Windows 宿主墙钟时间相同造成误拒绝。
+文本、卡片和附件姓名通知共用候选状态，仅在一个完整搜索候选且姓名完全一致时自动发送。其余结果按序号展示真实身份和部门；下一条原生用户消息的明确数字选择必须与 `choice` 一致，不能由模型代选。候选及原始正文、完整卡片或附件快照按平台实例、原生会话和发起人隔离，并绑定 UID/工号快照；同范围新通知替换旧意图，选择后消耗，重载后清空。发送前通过 `get_user_profile` 重查 UID 和真实工号，再走共用名单的 `send_to_user`、`send_card_to_user` 或 `send_media_to_user`；缺失、变化或拒绝均不改投，不重新提交未知意图。附件在展示候选前保存字节，不重新读取源路径或选择消息的附件。原生事件高精度接收顺序拒绝同消息及候选产生前的选择，避免 Windows 宿主墙钟时间相同造成误拒绝。
 
 `get_user_profile` 返回的 `profile.id` 由桥接统一为字符串，与 `search_employees` 候选 UID 使用相同格式；Driver 的原始数字 UID 不应被误判为身份缺失。`raw` 保留原始字段，`loginName` 仍只取真实 `raw.login_name`，不以 UID 代替工号。
 

@@ -671,7 +671,7 @@ async def test_uri_only_uncached_image_downloads_original_over_real_http(connect
 
 
 @pytest.fixture
-def notification_tools():
+def kairo_tools():
     context = Context.__new__(Context)
     context.platform_manager = SimpleNamespace(platform_insts=[])
     context.provider_manager = SimpleNamespace(llm_tools=FunctionToolManager())
@@ -682,6 +682,12 @@ def notification_tools():
         event.role = "admin"
         return ContextWrapper(AstrAgentContext(context=context, event=event))
 
+    return registered, wrap
+
+
+@pytest.fixture
+def notification_tools(kairo_tools):
+    registered, wrap = kairo_tools
     return registered["kairo_notify_employee"], registered["kairo_select_employee"], wrap
 
 
@@ -812,3 +818,149 @@ async def test_exact_name_notification_accepts_native_numeric_profile_uid(
     assert [(call["type"], call["targetLoginName"], call["payload"]) for call in calls] == [
         ("textToUser", "e07783", body)
     ]
+
+
+@pytest.mark.parametrize("first_contact", [False, True])
+@pytest.mark.parametrize("ambiguous", [False, True])
+@pytest.mark.parametrize(
+    "tool_name,args,call_type,payload",
+    [
+        (
+            "kairo_send_app_card",
+            {"title": "公告", "text": "<正文>\n第二行"},
+            "appMessage",
+            {"title": "公告", "content": "&lt;正文&gt;<br>第二行"},
+        ),
+        (
+            "kairo_send_url_card",
+            {"title": "链接", "summary": "摘要", "linkUrl": "https://example.org"},
+            "urlCard",
+            {"title": "链接", "summary": "摘要", "linkUrl": "https://example.org"},
+        ),
+        (
+            "kairo_send_biz_card",
+            {
+                "title": "任务",
+                "text": "正文",
+                "bizType": 1,
+                "bizUrl": "/task/42",
+                "summary": ["摘要"],
+            },
+            "bizMessage",
+            {
+                "title": "任务",
+                "content": "正文",
+                "bizType": 1,
+                "bizUrl": "/task/42",
+                "summary": ["摘要"],
+            },
+        ),
+    ],
+)
+async def test_registered_cards_push_to_employee_private_chat_without_source_post(
+    connection, kairo_tools, first_contact, ambiguous, tool_name, args, call_type, payload
+):
+    adapter, command, _, _ = connection
+    registered, wrap = kairo_tools
+    tool, select = registered[tool_name], registered["kairo_select_employee"]
+    uid, login = ("44", "E044") if first_contact else ("43", "E043")
+    recipient = {
+        "id": uid,
+        "name": "目标员工",
+        "loginName": login,
+        "departmentPaths": ["公司 / 研发"],
+    }
+    candidates = ([{**recipient, "id": "42", "loginName": "E042"}] if ambiguous else []) + [
+        recipient
+    ]
+    await command("search_employees", employees=candidates)
+    await command("emit", message=incoming("card-request", content="给目标员工推送卡片"))
+    event = await receive(adapter)
+    event.session_id = "rewritten-context"
+    result = await tool.call(wrap(event), name="目标员工", **args)
+    if ambiguous:
+        assert "尚未发送" in result and await command("calls") == []
+        assert "错误" in await select.call(wrap(event), choice=2)
+        await command("emit", message=incoming("card-choice", content="选择第二个"))
+        result = await select.call(wrap(await receive(adapter)), choice=2)
+    else:
+        assert await tool.call(wrap(event), name="目标员工", **args) == result
+    assert "sent" in result and "sessionId=" in result
+    calls = await command("calls")
+    assert [(call["type"], call["targetLoginName"], call["payload"]) for call in calls] == [
+        (call_type, login, payload)
+    ]
+    assert "targetSessionId" not in calls[0]["options"]
+    sessions = await adapter.get_client().get_sessions()
+    private = next(
+        session
+        for session in sessions
+        if session["type"] == "private" and session["receiverId"] == uid
+    )
+    assert f"sessionId={private['id']}" in result
+    assert private["id"] != event.target_session_id
+
+
+@pytest.mark.parametrize("kind", ["image", "file"])
+@pytest.mark.parametrize("first_contact", [False, True])
+@pytest.mark.parametrize("ambiguous", [False, True])
+async def test_registered_media_pushes_cached_bytes_to_selected_employee(
+    connection, kairo_tools, kind, first_contact, ambiguous
+):
+    adapter, command, _, _ = connection
+    registered, wrap = kairo_tools
+    tool, select = registered[f"kairo_send_{kind}"], registered["kairo_select_employee"]
+    uid, login = ("44", "E044") if first_contact else ("43", "E043")
+    recipient = {"id": uid, "name": "目标员工", "loginName": login, "departmentPaths": None}
+    candidates = ([{**recipient, "id": "42", "loginName": "E042"}] if ambiguous else []) + [
+        recipient
+    ]
+    await command("search_employees", employees=candidates)
+    body = PNG if kind == "image" else "完整原始报告\n第二行".encode()
+    remote = r"R:\KK9\跨会话.png" if kind == "image" else r"R:\KK9\跨会话.txt"
+    await command("cached_file", file_path=remote, bytes_base64=base64.b64encode(body).decode())
+    fields = (
+        {"images": [{"originalFilePath": remote}]}
+        if kind == "image"
+        else {"fileInfo": {"fileName": "原始报告.txt", "filePath": remote}, "messageType": "file"}
+    )
+    await command("emit", message=incoming("media-request", content="给目标员工发附件", **fields))
+    event = await receive(adapter)
+    result = await tool.call(wrap(event), name="目标员工")
+    if ambiguous:
+        assert "尚未发送" in result and await command("calls") == []
+        # 删除入站缓存，证明选择使用发起时的快照，不依赖后续原文件。
+        attachment = next(
+            item
+            for item in event.get_messages()
+            if isinstance(item, Image if kind == "image" else File)
+        )
+        original = (
+            await attachment.convert_to_file_path()
+            if kind == "image"
+            else await attachment.get_file()
+        )
+        Path(original).unlink()
+        await command("emit", message=incoming("media-choice", content="选第2个"))
+        choice = await receive(adapter)
+        result = await select.call(wrap(choice), choice=2)
+        assert await select.call(wrap(choice), choice=2) == result
+    else:
+        assert await tool.call(wrap(event), name="目标员工") == result
+    assert "sent" in result
+    calls = await command("calls")
+    assert [
+        (call["type"], call["targetLoginName"], base64.b64decode(call["bytes_base64"]))
+        for call in calls
+    ] == [(kind, login, body)]
+    assert "targetSessionId" not in calls[0]["options"]
+    if kind == "file":
+        assert Path(calls[0]["payload"]).name == "原始报告.txt"
+    sessions = await adapter.get_client().get_sessions()
+    private = next(
+        session
+        for session in sessions
+        if session["type"] == "private" and session["receiverId"] == uid
+    )
+    assert f"sessionId={private['id']}" in result
+    assert private["id"] != event.target_session_id

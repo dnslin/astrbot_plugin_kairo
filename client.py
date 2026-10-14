@@ -133,8 +133,10 @@ class KairoClient:
         self,
         user_id: str,
         login_name: str,
-        text: str,
+        text: str | None = None,
         *,
+        card: dict | None = None,
+        media: dict | None = None,
         operation_id: str | None = None,
     ) -> dict:
         """Recheck the selected UID and exact login snapshot, then use the policy send path.
@@ -142,6 +144,8 @@ class KairoClient:
         A changed or missing identity is not a reason to guess another login or UID.
         The bridge supplies the real raw login, never the Driver's display fallback.
         """
+        if sum(value is not None for value in (text, card, media)) != 1:
+            raise ValueError("通知必须且只能提供 text、card 或 media 之一")
         if not user_id.strip() or not login_name.strip():
             raise BridgeError("IDENTITY_UNAVAILABLE", "所选员工缺少 UID 或准确工号")
         response = await self._server.request("get_user_profile", {"user_id": user_id})
@@ -162,6 +166,13 @@ class KairoClient:
             raise BridgeError("IDENTITY_UNAVAILABLE", f"员工 {user_id} 缺少真实 UID 或准确工号")
         if uid != user_id or login != login_name:
             raise BridgeError("IDENTITY_CHANGED", "所选员工 UID 或准确工号已变化，请重新查询")
+        if card is not None:
+            return await self.notify_employee_card(login_name, card, operation_id=operation_id)
+        if media is not None:
+            self._policy.check_employee(login_name)
+            return await self._send_operation(
+                "send_media_to_user", {**media, "login_name": login_name}, operation_id=operation_id
+            )
         return await self.notify_employee(login_name, text, operation_id=operation_id)
 
     async def notify_employee(
@@ -188,6 +199,59 @@ class KairoClient:
         self._policy.check_employee(login_name)
         return await self._send_operation(
             "send_to_user", {"login_name": login_name, "text": text}, operation_id=operation_id
+        )
+
+    async def notify_employee_card(
+        self, login_name: str, card: dict, *, operation_id: str | None = None
+    ) -> dict:
+        """按准确工号发送卡片；首次私聊由原生发送建立，不预发文本。"""
+        login_name = login_name.strip()
+        if not login_name:
+            raise ValueError("准确工号不能为空")
+        params = self._card_params(card)
+        self._policy.check_employee(login_name)
+        return await self._send_operation(
+            "send_card_to_user",
+            {**params, "login_name": login_name},
+            operation_id=operation_id,
+        )
+
+    async def prepare_media(self, kind: str, source: Image | File | Path) -> dict:
+        """缓存附件字节；候选选择期间不再读取原文件或选择消息的附件。"""
+        if kind not in {"image", "file"}:
+            raise ValueError("附件只支持 image 或 file")
+        if isinstance(source, File):
+            resolved = await source.get_file()
+            if not resolved:
+                raise BridgeError("FILE_UNAVAILABLE", "待发送文件无法读取")
+            path = Path(resolved)
+            name = source.name or path.name
+        elif isinstance(source, Image):
+            path = Path(await source.convert_to_file_path())
+            name = path.name
+        else:
+            path, name = source, source.name
+        descriptor = await self._server.add_file(path, name=name)
+        return {"kind": kind, "file_id": descriptor["file_id"], "name": descriptor["name"]}
+
+    async def send_media(
+        self,
+        target_session_id: str,
+        media: dict,
+        *,
+        sender_id: str | None = None,
+        operation_id: str | None = None,
+    ) -> dict:
+        """发送已缓存的图片或文件到明确原生会话，保留发送结果和操作 ID。"""
+        if (
+            not target_session_id.isascii()
+            or not target_session_id.isdecimal()
+            or target_session_id.startswith("0")
+        ):
+            raise ValueError(f"需要原生 KK9 会话 ID：{target_session_id}")
+        await self._check_target(target_session_id, sender_id)
+        return await self._send_operation(
+            "send", {**media, "target_session_id": target_session_id}, operation_id=operation_id
         )
 
     async def send_voice_text(
