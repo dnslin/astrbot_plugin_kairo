@@ -380,6 +380,95 @@ class KairoClient:
             operation_id=operation_id,
         )
 
+    async def get_recent_messages(
+        self, session_id: str, *, limit: int = 20, sender_id: str | None = None
+    ) -> list[dict]:
+        """读取明确群会话的真实消息引用与摘要，不下载附件或发送消息。"""
+        if (
+            not isinstance(session_id, str)
+            or not session_id.isascii()
+            or not session_id.isdecimal()
+            or session_id.startswith("0")
+            or int(session_id) > 9_007_199_254_740_991
+        ):
+            raise ValueError(f"需要原生 KK9 群会话 ID：{session_id}")
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("历史消息数量必须为1～100的整数")
+        self._policy.check_group(session_id)
+        if sender_id is not None:
+            await self._check_employee_id(sender_id)
+        response = await self._server.request(
+            "get_recent_messages", {"session_id": session_id, "limit": limit}
+        )
+        if not isinstance(response, dict) or not isinstance(response.get("messages"), list):
+            raise BridgeError("INVALID_RESPONSE", "历史查询未返回消息列表")
+        messages = response["messages"]
+        required = {
+            "messageId",
+            "msgIdx",
+            "senderId",
+            "sender",
+            "content",
+            "timestamp",
+            "messageType",
+            "isRecalled",
+        }
+        if any(not isinstance(item, dict) or not required.issubset(item) for item in messages):
+            raise BridgeError("INVALID_RESPONSE", "历史消息缺少原生引用或摘要字段")
+        self._policy.check_group(session_id)
+        if sender_id is not None:
+            await self._check_employee_id(sender_id)
+        return messages
+
+    async def send_chat_record(
+        self,
+        session_id: str,
+        messages: list[dict],
+        *,
+        sender_id: str | None = None,
+        operation_id: str | None = None,
+    ) -> dict:
+        """合并同一原生会话的真实消息；正文及作者由 Driver 重新查询。"""
+        if (
+            not isinstance(session_id, str)
+            or not session_id.isascii()
+            or not session_id.isdecimal()
+            or session_id.startswith("0")
+            or int(session_id) > 9_007_199_254_740_991
+        ):
+            raise ValueError(f"需要原生 KK9 会话 ID：{session_id}")
+        if not isinstance(messages, list) or not 1 <= len(messages) <= 100:
+            raise ValueError("合并聊天记录需要1～100条真实消息引用")
+        refs = []
+        ids: set[str] = set()
+        for item in messages:
+            if not isinstance(item, dict) or item.keys() != {"messageId", "msgIdx"}:
+                raise ValueError("聊天记录只接受 messageId 和 msgIdx，不接受正文或作者")
+            message_id, index = item["messageId"], item["msgIdx"]
+            if (
+                not isinstance(message_id, str)
+                or not message_id.isascii()
+                or not message_id.isdecimal()
+                or message_id.startswith("0")
+                or int(message_id) > 9_007_199_254_740_991
+                or type(index) is not int
+                or not 1 <= index <= 9_007_199_254_740_991
+                or message_id in ids
+            ):
+                raise ValueError("聊天记录需要不重复的原生正整数消息 ID 和准确索引")
+            ids.add(message_id)
+            refs.append({"messageId": message_id, "msgIdx": index})
+        await self._check_target(session_id, sender_id)
+        return await self._send_operation(
+            "send",
+            {
+                "kind": "chat_record",
+                "target_session_id": session_id,
+                "record": {"sourceSessionId": session_id, "msgArray": refs},
+            },
+            operation_id=operation_id,
+        )
+
     async def get_send_status(self, operation_id: str) -> dict:
         """Query an existing intent without resubmitting it."""
         return await self._server.request("get_send_status", {"operation_id": operation_id})

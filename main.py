@@ -8,9 +8,11 @@ from .notifications import KairoNotifications, KairoNotifyEmployeeTool, KairoSel
 from .tools import (
     KAIRO_ADMIN_TOOL_NAMES,
     KAIRO_TOOL_NAMES,
+    KairoGetChatHistoryTool,
     KairoGetGroupMembersTool,
     KairoSendAppCardTool,
     KairoSendBizCardTool,
+    KairoSendChatRecordTool,
     KairoSendFileTool,
     KairoSendImageTool,
     KairoSendUrlCardTool,
@@ -36,6 +38,8 @@ class KairoPlugin(Star):
             KairoSendImageTool(notifications),
             KairoSendFileTool(notifications),
             KairoGetGroupMembersTool(),
+            KairoGetChatHistoryTool(),
+            KairoSendChatRecordTool(),
             KairoNotifyEmployeeTool(notifications),
             KairoSelectEmployeeTool(notifications),
         )
@@ -54,7 +58,11 @@ class KairoPlugin(Star):
         else:
             excluded = frozenset() if event.is_admin() else KAIRO_ADMIN_TOOL_NAMES
             if event.message_obj.type != MessageType.GROUP_MESSAGE:
-                excluded = excluded | {"kairo_get_group_members"}
+                excluded = excluded | {
+                    "kairo_get_group_members",
+                    "kairo_get_chat_history",
+                    "kairo_send_chat_record",
+                }
         for name in excluded:
             req.func_tool.remove_tool(name)
 

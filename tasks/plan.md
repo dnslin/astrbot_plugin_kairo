@@ -317,3 +317,14 @@ Driver 代理回归使用本地真实 CONNECT 拒绝服务器，不访问外网�
 
 Driver 原生发送与 Fake 两个源码切片可独立实施；新提交产生后才能切换插件固定依赖。首次普通 GitHub fetch 因直连不可达失败，单次使用已有 localhost 代理成功，不修改持久 Git 配置。
 
+
+## 14. 当前群真实聊天记录卡片（用户要求接通）
+
+目标为当前群的原生合并转发，不是公告伪装、虚构作者正文或跨群/按姓名发送。复用已固定 Driver 的 getRecentMessages/sendChatRecord，不升级依赖、不加 Driver 补丁、缓存或数据库迁移。
+
+- 新增只读工具 `kairo_get_chat_history(limit=20)`，范围1～100，取得事件原群最近真实消息。返回 `session_id/total/messages`，每项仅含 `messageId,msgIdx,senderId,sender,content,timestamp,messageType,isRecalled`；缺失索引/发送者/类型为null，不暴露raw及附件本机路径，不展开已有合并卡片的内层正文。按原生索引升序显示，无法合并的记录保留可辨认信息。
+- 新增 `kairo_send_chat_record(messages)`，messages为1～100项 `{messageId,msgIdx}`，拒绝重复ID、伪造正文/作者/目标参数。来源及目标都来自事件原群，不采用宿主可变会话字段。Driver在提交前重读原生记录，撤回、缺失或索引不符不能拼造内容。成功返回None结束默认Agent，失败/unknown保留原因及首次操作ID；事件级去重和持久发送防重沿用已有链路。
+- 两工具对普通群成员开放，私聊及其他平台隐藏且执行拒绝，不补回人格停用工具。公共客户端 `get_recent_messages(session_id,limit=20,sender_id=None)` 读取前后复查群/发起人名单；`send_chat_record(session_id,messages,sender_id=None,operation_id=None)` 保留明确来源/目标同会话及原发送结果。跨范围调用不在此工具契约内。
+- 协议v2新增 `get_recent_messages:{session_id,limit}` → `{messages}` 和 `send/kind=chat_record/record:{sourceSessionId,msgArray}`，该send要求来源与目标相同；引用/提及不支持。旧三类卡片及其他调用保持不变，无兼容分支或重试。
+- Node切片拥有协议、桥接及对应Node行为回归；Python工具切片拥有注册/过滤、调用及专属测试；主代理拥有公共客户端、transport允许列表、整合烟测、使用/协议文档。全部修改后统一运行bridge/pnpm check、Python全套和相关Ruff，不连接生产KK9或发真实消息；真机卡片预览/点击详情另行人工验收。
+

@@ -317,3 +317,20 @@ Driver 基础提交保持不变。`pnpm patchedDependencies` 应用 `@kairo__dri
 
 独立离线烟测再次使用无Driver补丁的实际安装包及编译桥接：正常绑定账号sent，编码/查人期间换号均前置failed且零草稿零提交。真实注册工具、默认Agent、HTTP/WS和SQLite联调中，唯一姓名与重名选择成功均一轮模型，unknown为两轮解释；原文/准确目标保存，重复和查询不重发，3次定向语音、来源群0次、Driver代次1、持久状态sent/sent/unknown。临时入口与数据自动清理；未连接生产KK9、发真实消息、重启服务或冒充接收端播放验收。
 
+
+## 当前群真实聊天记录卡片（0.9.0 实现阶段验证）
+
+按用户要求接通固定Driver已有的getRecentMessages/sendChatRecord。新增 `kairo_get_chat_history(limit=20)` 与 `kairo_send_chat_record(messages)`，只处理真实Kairo事件原群；普通成员可用，私聊/非Kairo隐藏并执行拒绝，不补回人格停用。历史限1～100条，只返回原生ID/索引、作者、摘要、时间、类型及撤回状态，读取前后复查群/发起人名单，不下载附件或展开已有合并卡片。发送来源等于目标，引用限1～100项唯一真实ID/索引，不接收正文/作者/name或其他目标；Driver重读原生内容后构造类型15，沿用首次operationId、取消及unknown不重发，sent后结束默认Agent。
+
+公共客户端与transport、协议v2类型/解析/序列化、桥接分发和工具注册已一起接通；不修改固定revision、依赖、配置或发送数据库。Native renderer新行为回归独立放入 `bridge/tests/chat-records.test.ts`，避免扩张原bridge测试文件；Python专属回归在 `tests/test_chat_records.py`。未增加只断言schema/描述文字的永久测试，实际边界和状态测试保留。
+
+实际验证：
+
+- `bridge/` 下 `pnpm check`：TypeScript构建及120项Node通过，无跳过。安装包真实card/history renderer在原生IPC替身上验证来源群、摘要去路径、真实作者正文、顺序、原生类型15、错误ID/索引及撤回前置拒绝、持久意图冲突和unknown跨实例防重。
+- AstrBot虚拟环境 `python.exe -m pytest -q --tb=short tests/test_chat_records.py tests/test_tools.py` 首轮128项通过；移除新增的静态schema/描述测试后，`python.exe -m pytest -q --tb=short` 全套482项通过，仅宿主已有audioop弃用警告。
+- `python.exe -m ruff check client.py tools.py main.py transport.py tests` 与对应 `ruff format --check` 通过，17文件格式正确。首轮跨模块fixture直接导入与测试参数同名触发F811，改为模块导入并显式复用fixture对象；未压制规则。
+- 首轮Node为119通过/1失败，定位到摘要映射选择稳定id而非已提供的明确messageId。按Driver可选messageId契约优先使用原生messageId，缺省时使用其稳定原生id；原断言未删改，后续120项全绿。
+- 独立执行 `python.exe -B artifacts/tmp/chat-record-smoke.py`，临时Node入口只导入bridge/dist编译产物；真实注册工具、默认Agent、HTTP/WS和SQLite，唯一KK9替身为已安装Fake。普通成员读取历史后合并两位真实测试作者的引用，宿主session/UMO改写不改变原群793803。sent为2轮模型（查询→发送），unknown为3轮（继续解释）；同批重复、完成后重复及状态查询均不额外提交。总计2次chatRecord、额外文本0条、Driver代次1，持久状态sent/unknown；4条历史按索引返回、无raw/附件路径。进程退出0，临时数据库、宿主目录和两份入口全部清理。
+
+以上是实现阶段记录：当时仅修改开发目录，未替换AstrBot运行目录、发布新版本、重启生产服务或向真实群发送。真实卡片预览、点击详情、作者/顺序及自然语言模型选择保留获授权人工验收；上游已知无关定时器失败未重跑或修改。后续按用户要求将上述能力纳入0.9.0发布，元数据、Python项目及桥接版本同步；既有0.8.0及其标签不变，发布结果和CI记录见GitHub Release。
+

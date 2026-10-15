@@ -55,12 +55,15 @@ Python 完成事件提交或名单拒绝后返回 `{"type":"ack","event_id":"...
 | `get_send_status` | `operation_id` | 原意图状态，不触发发送 |
 | `get_sessions` | `{}` | `{sessions:[...]}`，保留 `id/type/nativeType/receiverId` |
 | `get_group_members` | 规范原生正整数 `session_id`，须可表示为 JavaScript 安全整数；不接受其他字段 | `{members:[{id,name,loginName,departmentPaths,position}]}`，完整群成员资料 |
+| `get_recent_messages` | 正安全整数 `session_id`；可选整数 `limit`，默认20、范围1～100；不接受其他字段 | `{messages:[{messageId,msgIdx,senderId,sender,content,timestamp,messageType,isRecalled}]}`，当前群真实历史摘要 |
 | `get_user_profile` | `user_id` | `{profile:员工档案或null}`；工号必须来自原生 `login_name`，不能用 UID 回退值代替 |
 | `search_employees` | 非空 `keyword`，最多 256 UTF-16 单位 | `{employees:[{id,name,loginName,departmentPaths}],hasMore:false}`，完整的当前账号可见搜索结果 |
 
 `login_name` 仅去首尾空白，区分大小写。查询不要求 `operation_id`，不开放任意 IPC 或全组织同步。所有请求先核对实际登录 UID。
 
 `get_group_members` 使用原生群会话ID，不是群接收对象ID或宿主上下文。Driver默认整轮期限30秒，Python单次等待35秒，不改变全局时限。成员按UID去重，工号、姓名、岗位及全部可见部门路径缺失时保留null；不截断到200人，不保证服务器此刻最新。空群正常返回空列表；非群、未知会话、档案错误或超时返回原生错误，不返回部分成员，也不写入发送意图数据库。
+
+`get_recent_messages` 先定位明确原生群会话，再调用现有 `Driver.getRecentMessages`。未知会话、私聊及原生查询错误分别报错，不把错误伪装为空列表；空列表是正常结果。结果按原生索引升序、缺失索引置后；索引/作者UID/类型缺失保留null。只返回表中字段，不暴露raw、附件本机路径或展开已有聊天记录内层正文，不下载附件、不派发实时事件、不写发送意图或标已读。Python公共客户端读取前后复查群/发起人名单，等待使用默认请求时限。
 
 `send_card_to_user` 的 `kind` 只允许 `app_card`、`url_card`、`biz_card`，`card` 沿用下表字段与完整校验。桥接调用对应 Driver 卡片方法，传入准确 `targetLoginName` 和 `operationId`；不接受会话覆盖、引用或提及，不依赖会话列表，不预发文本。首次发送使用 Driver 已有的准确工号原生上下文，由本次业务回执确认正式私聊会话。
 
@@ -83,10 +86,13 @@ Python 完成事件提交或名单拒绝后返回 `{"type":"ack","event_id":"...
 | `app_card` | `card:{title,content,linkUrl?,pcAppCode?}` | `sendAppMessage` |
 | `url_card` | `card:{title,summary,linkUrl,picUrl?}` | `sendUrlCard` |
 | `biz_card` | `card:{title,content,bizType,bizUrl,summary?}` | `sendBizMessage` |
+| `chat_record` | `record:{sourceSessionId,msgArray:[{messageId,msgIdx}]}`，来源必须等于目标，1～100项唯一消息ID | `sendChatRecord`，原生类型15 |
 
 非文本消息不接受引用/提及。文件字段不接受本地路径或任意 URL；先通过附件接口传输实际字节。`mentions` 中 `uid="all"` 表示全体；正文仅在包含提及时可以为空。卡片文字字段非空、最长 128000 UTF-16 单位；额外字段被拒绝。业务卡片 `bizType=1|2`，`bizUrl` 是以 `/` 开头且非 `//` 开头的相对路径，`summary` 为字符串数组。
 
 `voice_text` 只接受 `operation_id/target_session_id/kind/text`，不接受音色、文件、路径、引用或提及；现有 `voice + file_id` 继续用于发送实际音频文件，二者不是兼容回退。Python 对文字语音使用 90 秒请求时限，对人员搜索使用 35 秒；其他请求默认 30 秒不变，排队时间包含在请求等待内。
+
+`chat_record` 仅接受消息引用，不接受标题、正文、作者、引用或提及。来源/目标与消息ID都为正安全整数字符串，msgIdx为正安全整数；重复消息ID、额外字段和不同来源被拒绝。Driver 重新读取同一来源的原生消息、校对ID/索引/作者/撤回状态并按原索引生成内容，不以调用者提供的正文拼造记录。它不是 `send_card_to_user` 的三类普通卡片，不支持准确工号首次私聊。同操作ID更换引用仍冲突，unknown只查询不重发。
 
 ## 响应与发送意图
 
@@ -102,13 +108,15 @@ Python 完成事件提交或名单拒绝后返回 `{"type":"ack","event_id":"...
 
 SQLite 在触发发送前声明意图。同一 ID 的目标、工号、内容、类型、引用或提及不同会冲突；相同意图重复调用不会再次触发，前置失败也不重新提交。发送记录保留正式会话和原生回执，迟到 `unknown` 不覆盖 `sent/failed`。
 
-Python 请求超时或断线后不重新发送，只查询一次原 `operation_id`。仍未知则保留操作 ID 和原因；`notify_employee`、`notify_employee_voice`、`send_voice_text`、`send_card`、`send_media` 返回结果供调用方处理，`send_chain` 抛出含 `result` 的 `BridgeError`。六类按需发送工具在提交前保存操作 ID，等待取消后仍能核查原意图。协议不保证进程重启后的入站补偿或端到端恰好一次处理。
+Python 请求超时或断线后不重新发送，只查询一次原 `operation_id`。仍未知则保留操作 ID 和原因；`notify_employee`、`notify_employee_voice`、`send_voice_text`、`send_card`、`send_media`、`send_chat_record` 返回结果供调用方处理，`send_chain` 抛出含 `result` 的 `BridgeError`。七类按需发送工具在提交前保存操作 ID，等待取消后仍能核查原意图。协议不保证进程重启后的入站补偿或端到端恰好一次处理。
 
 员工和群黑白名单由 Python 公共客户端统一执行；Bridge RPC 是内部传输，不是另一个面向插件的无名单发送 API。管理员指令、事件回复和主动发送都经过该客户端。
 
 模型工具必须使用真实 `KairoMessageEvent`。语音、卡片、图片和文件工具未传 `name` 时使用事件原始会话与发送者；传 `name` 时，仅真实管理员能按姓名跨会话推送。`kairo_notify_employee(name,text)`、`kairo_select_employee(choice)` 也仅向真实管理员开放，不接受平台、UID、工号、会话参数。非 Kairo 请求移除本插件全部工具，非管理员 Kairo 请求额外移除通知/选择工具；语音、卡片和附件保留当前会话能力，执行时拒绝非管理员传 `name`，图片/文件另拒绝非管理员传宿主 `path`。不修改全局启停或补回人格移除的工具。同一发送工具在同一事件中不能通过增删 `name` 再次尝试另一目标；每事件的一次尝试不替代 Driver 的持久发送记录。
 
 `kairo_get_group_members` 是无参数只读工具，仅真实Kairo群事件可用；私聊和其他平台在请求筛选时移除，执行入口也拒绝。工具从事件保存的原生 `target_session_id` 取得群会话，宿主上下文或群显示字段改写不改变读取目标。普通成员可用，沿用群及发起人名单，等待全员资料后重新检查当前规则；不筛除名单中的个别成员来伪称全员。返回 `{session_id,total,members}` 的JSON工具结果，不设置发送完成标志，不接入发送重试或操作ID。
+
+`kairo_get_chat_history(limit=20)` 与 `kairo_send_chat_record(messages)` 仅真实Kairo群可用，普通成员及管理员均沿用现有名单；私聊和其他平台在筛选及实际执行两处拒绝，不补回人格停用工具。历史是只读JSON结果，不设置发送完成标志；发送从事件保存的原群构造相同来源/目标，仅接受真实messageId/msgIdx，不接收name或任意目标。合并成功仅在sent时返回None结束默认主聊天Agent，失败/unknown继续说明并保留首次操作ID。已有聊天记录卡片的入站仍只提供摘要，本接口不展开该卡片的内层历史。
 
 文本、语音、卡片和附件姓名通知共用候选状态，仅在一个完整搜索候选且姓名完全一致时自动发送。其余结果按序号展示真实身份和部门；下一条原生用户消息的明确数字选择必须与 `choice` 一致，不能由模型代选。候选及原始正文、完整卡片或附件快照按平台实例、原生会话和发起人隔离，并绑定 UID/工号快照；语音保存原始朗读文本，选择消息不能修改。同期同范围新通知替换旧意图，选择后消耗，重载后清空。发送前通过 `get_user_profile` 重查 UID 和真实工号，再走共用名单的 `send_to_user`、`send_voice_to_user`、`send_card_to_user` 或 `send_media_to_user`；缺失、变化或拒绝均不改投，不重新提交未知意图。附件在展示候选前保存字节，不重新读取源路径或选择消息的附件。原生事件高精度接收顺序拒绝同消息及候选产生前的选择，避免 Windows 宿主墙钟时间相同造成误拒绝。
 

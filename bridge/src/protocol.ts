@@ -1,4 +1,4 @@
-import type { KK9AppMsgOptions, KK9BizMsgOptions, KK9Employee, KK9EmployeeSearchResult, KK9GroupMember, KK9Session, KK9UrlCardOptions, SendResult } from '@kairo/driver';
+import type { KK9AppMsgOptions, KK9BizMsgOptions, KK9ChatRecordOptions, KK9Employee, KK9EmployeeSearchResult, KK9GroupMember, KK9Session, KK9UrlCardOptions, SendResult } from '@kairo/driver';
 
 export class RequestError extends Error {
   constructor(public readonly code: string, message: string) { super(message); }
@@ -14,6 +14,7 @@ export type SendParams = SendTarget & (
   | { kind: 'text'; text: string; mentions?: Array<{ uid: string; name: string }>; reply_to?: string }
   | { kind: 'voice_text'; text: string }
   | { kind: 'image' | 'file' | 'voice'; file_id: string; name?: string }
+  | { kind: 'chat_record'; record: KK9ChatRecordOptions }
   | CardParams
 );
 type Request<A extends string, P> = { type: 'request'; id: string; action: A; params: P };
@@ -26,9 +27,20 @@ export type BridgeRequest =
   | Request<'get_send_status', { operation_id: string }>
   | Request<'get_sessions', Record<string, never>>
   | Request<'get_group_members', { session_id: string }>
+  | Request<'get_recent_messages', { session_id: string; limit: number }>
   | Request<'get_user_profile', { user_id: string }>
   | Request<'search_employees', { keyword: string }>;
-export type BridgeResult = SendResult | { sessions: KK9Session[] } | { members: KK9GroupMember[] } | { profile: KK9Employee | null } | KK9EmployeeSearchResult;
+export interface HistoryMessage {
+  messageId: string;
+  msgIdx: number | null;
+  senderId: string | null;
+  sender: string;
+  content: string;
+  timestamp: number;
+  messageType: string | null;
+  isRecalled: boolean;
+}
+export type BridgeResult = SendResult | { sessions: KK9Session[] } | { members: KK9GroupMember[] } | { messages: HistoryMessage[] } | { profile: KK9Employee | null } | KK9EmployeeSearchResult;
 
 function object(value: unknown, name: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new RequestError('INVALID_REQUEST', `${name}无效`);
@@ -41,6 +53,32 @@ function text(value: unknown, name: string, max = 256): string {
 function fields(raw: Record<string, unknown>, allowed: string[], name: string): void {
   if (Object.keys(raw).some((key) => !allowed.includes(key))) throw new RequestError('INVALID_REQUEST', `${name} 包含不支持的字段`);
 }
+function nativeId(value: unknown, name: string): string {
+  const id = text(value, name);
+  if (!/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id))) throw new RequestError('INVALID_REQUEST', `${name} 必须为原生正整数 ID 字符串`);
+  return id;
+}
+
+function parseRecord(value: unknown, targetSessionId: string): KK9ChatRecordOptions {
+  const record = object(value, 'record');
+  fields(record, ['sourceSessionId', 'msgArray'], 'record');
+  const sourceSessionId = nativeId(record.sourceSessionId, 'record.sourceSessionId');
+  if (sourceSessionId !== targetSessionId) throw new RequestError('INVALID_REQUEST', '聊天记录来源与目标必须为同一原生会话');
+  if (!Array.isArray(record.msgArray) || record.msgArray.length < 1 || record.msgArray.length > 100) throw new RequestError('INVALID_REQUEST', 'record.msgArray 必须包含1到100条消息引用');
+  const seen = new Set<string>();
+  const msgArray = record.msgArray.map((value: unknown) => {
+    const item = object(value, 'record.msgArray');
+    fields(item, ['messageId', 'msgIdx'], 'record.msgArray');
+    const messageId = nativeId(item.messageId, 'record.msgArray.messageId');
+    const msgIdx = item.msgIdx;
+    if (typeof msgIdx !== 'number' || !Number.isSafeInteger(msgIdx) || msgIdx <= 0) throw new RequestError('INVALID_REQUEST', 'record.msgArray.msgIdx 必须为正安全整数');
+    if (seen.has(messageId)) throw new RequestError('INVALID_REQUEST', 'record.msgArray 不能重复选择同一消息ID');
+    seen.add(messageId);
+    return { messageId, msgIdx };
+  });
+  return { sourceSessionId, msgArray };
+}
+
 function cardText(raw: Record<string, unknown>, key: string): string { return text(raw[key], `card.${key}`, 128_000); }
 function optionalCardText(raw: Record<string, unknown>, key: string): Record<string, string> {
   return raw[key] === undefined ? {} : { [key]: cardText(raw, key) };
@@ -93,6 +131,13 @@ export function parseRequest(value: unknown): BridgeRequest {
     if (!/^[1-9]\d*$/.test(session_id) || !Number.isSafeInteger(Number(session_id))) throw new RequestError('INVALID_REQUEST', 'session_id 必须为原生正整数会话 ID 字符串');
     return { type: 'request', id, action: raw.action, params: { session_id } };
   }
+  if (raw.action === 'get_recent_messages') {
+    fields(params, ['session_id', 'limit'], 'params');
+    const session_id = nativeId(params.session_id, 'session_id');
+    const limit = params.limit === undefined ? 20 : params.limit;
+    if (typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new RequestError('INVALID_REQUEST', 'limit 必须为1到100的整数');
+    return { type: 'request', id, action: raw.action, params: { session_id, limit } };
+  }
   if (raw.action === 'get_user_profile') {
     fields(params, ['user_id'], 'params');
     return { type: 'request', id, action: raw.action, params: { user_id: text(params.user_id, 'user_id') } };
@@ -101,7 +146,7 @@ export function parseRequest(value: unknown): BridgeRequest {
     fields(params, ['keyword'], 'params');
     return { type: 'request', id, action: raw.action, params: { keyword: text(params.keyword, 'keyword') } };
   }
-  if (!['send', 'send_to_user', 'send_voice_to_user', 'send_card_to_user', 'send_media_to_user', 'get_send_status'].includes(String(raw.action))) throw new RequestError('UNSUPPORTED_ACTION', '仅支持 send、send_to_user、send_voice_to_user、send_card_to_user、send_media_to_user、get_send_status、get_sessions、get_group_members、get_user_profile 和 search_employees');
+  if (!['send', 'send_to_user', 'send_voice_to_user', 'send_card_to_user', 'send_media_to_user', 'get_send_status'].includes(String(raw.action))) throw new RequestError('UNSUPPORTED_ACTION', '仅支持 send、send_to_user、send_voice_to_user、send_card_to_user、send_media_to_user、get_send_status、get_sessions、get_group_members、get_recent_messages、get_user_profile 和 search_employees');
   const operation_id = text(params.operation_id, 'operation_id');
   if (raw.action === 'get_send_status') {
     fields(params, ['operation_id'], 'params');
@@ -158,7 +203,12 @@ export function parseRequest(value: unknown): BridgeRequest {
       result = { ...target, ...parseCard(params.kind, params.card) };
       break;
     }
-    default: throw new RequestError('UNSUPPORTED_MESSAGE', '仅支持 text、voice_text、image、file、voice、app_card、url_card、biz_card');
+    case 'chat_record': {
+      fields(params, ['operation_id', 'target_session_id', 'kind', 'record'], 'send');
+      result = { ...target, kind: params.kind, record: parseRecord(params.record, target_session_id) };
+      break;
+    }
+    default: throw new RequestError('UNSUPPORTED_MESSAGE', '仅支持 text、voice_text、image、file、voice、app_card、url_card、biz_card、chat_record');
   }
   return { type: 'request', id, action: 'send', params: result };
 }
@@ -166,6 +216,7 @@ export function parseRequest(value: unknown): BridgeRequest {
 export function serializeResult(result: BridgeResult): Record<string, unknown> {
   if ('sessions' in result) return { sessions: result.sessions };
   if ('members' in result) return { members: result.members };
+  if ('messages' in result) return { messages: result.messages };
   if ('profile' in result) return { profile: result.profile };
   if ('employees' in result) return { employees: result.employees, hasMore: result.hasMore };
   const { operationId, status, messageId, sessionId, error, nativeCode, receipt, isPreTrigger, verifyLatencyMs } = result;

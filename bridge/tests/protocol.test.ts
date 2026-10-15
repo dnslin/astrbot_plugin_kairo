@@ -105,6 +105,54 @@ test('群成员只接受规范原生正整数会话 ID，不接受群对象、�
   }
 });
 
+test('群历史只接受原生会话与1到100的整数limit，默认20且拒绝所有发送参数', () => {
+  const history = { type: 'request', id: 'history', action: 'get_recent_messages', params: { session_id: '23' } };
+  assert.deepEqual(parseRequest(history), { ...history, params: { session_id: '23', limit: 20 } });
+  for (const limit of [1, 20, 100]) {
+    assert.deepEqual(parseRequest({ ...history, params: { session_id: String(Number.MAX_SAFE_INTEGER), limit } }).params, { session_id: String(Number.MAX_SAFE_INTEGER), limit });
+  }
+  for (const limit of [null, 0, -1, 1.5, 101, '20', true, {}, [], Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => parseRequest({ ...history, params: { ...history.params, limit } }), { code: 'INVALID_REQUEST' });
+  }
+  for (const session_id of [undefined, null, '', '0', '01', '-2', '+23', ' 23', '23 ', '2.3', '2e3', '9007199254740992', 23, {}, []]) {
+    assert.throws(() => parseRequest({ ...history, params: { session_id } }), { code: 'INVALID_REQUEST' });
+  }
+  for (const extra of [{ operation_id: 'must-not-send' }, { target_session_id: '8' }, { name: '群名' }, { text: '通知' }, { page: 1 }, { sender_id: '2' }]) {
+    assert.throws(() => parseRequest({ ...history, params: { ...history.params, ...extra } }), { code: 'INVALID_REQUEST' });
+  }
+});
+
+test('聊天记录仅接受同群真实消息ID与索引，严格限制1到100项并拒绝重复与伪造字段', () => {
+  const params = { operation_id: 'record', target_session_id: '23', kind: 'chat_record', record: { sourceSessionId: '23', msgArray: [{ messageId: '101', msgIdx: 1 }] } };
+  const recordRequest = { ...request, params };
+  assert.deepEqual(parseRequest(recordRequest).params, params);
+  const maximum = { messageId: String(Number.MAX_SAFE_INTEGER), msgIdx: Number.MAX_SAFE_INTEGER };
+  assert.deepEqual(parseRequest({ ...recordRequest, params: { ...params, record: { ...params.record, msgArray: [maximum] } } }).params, { ...params, record: { ...params.record, msgArray: [maximum] } });
+  assert.doesNotThrow(() => parseRequest({ ...recordRequest, params: { ...params, record: { ...params.record, msgArray: Array.from({ length: 100 }, (_, index) => ({ messageId: String(index + 1), msgIdx: index + 1 })) } } }));
+  for (const msgArray of [undefined, null, {}, [], Array.from({ length: 101 }, (_, index) => ({ messageId: String(index + 1), msgIdx: index + 1 })), [{ messageId: '101', msgIdx: 1 }, { messageId: '101', msgIdx: 2 }]]) {
+    assert.throws(() => parseRequest({ ...recordRequest, params: { ...params, record: { ...params.record, msgArray } } }), { code: 'INVALID_REQUEST' });
+  }
+  for (const messageId of [undefined, null, '', '0', '01', '-1', '+1', '1.5', '1e3', ' 101', '101 ', '9007199254740992', 101, true, {}, []]) {
+    assert.throws(() => parseRequest({ ...recordRequest, params: { ...params, record: { ...params.record, msgArray: [{ messageId, msgIdx: 1 }] } } }), { code: 'INVALID_REQUEST' });
+  }
+  for (const msgIdx of [undefined, null, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '1', true, {}, []]) {
+    assert.throws(() => parseRequest({ ...recordRequest, params: { ...params, record: { ...params.record, msgArray: [{ messageId: '101', msgIdx }] } } }), { code: 'INVALID_REQUEST' });
+  }
+  for (const sourceSessionId of [undefined, null, '24', '023', '0', '-1', '9007199254740992', 23]) {
+    assert.throws(() => parseRequest({ ...recordRequest, params: { ...params, record: { ...params.record, sourceSessionId } } }), { code: 'INVALID_REQUEST' });
+  }
+  for (const extra of [{ reply_to: '101' }, { mentions: [] }, { name: '标题' }, { card: {} }, { text: '伪造正文' }, { targetLoginName: 'AbC' }]) {
+    assert.throws(() => parseRequest({ ...recordRequest, params: { ...params, ...extra } }), /不支持/);
+  }
+  for (const extra of [{ title: '标题' }, { targetSessionId: '24' }, { sender: '伪造作者' }]) {
+    assert.throws(() => parseRequest({ ...recordRequest, params: { ...params, record: { ...params.record, ...extra } } }), { code: 'INVALID_REQUEST' });
+  }
+  for (const extra of [{ content: '伪造正文' }, { sender: '伪造作者' }, { sessionId: '24' }, { name: '标题' }]) {
+    assert.throws(() => parseRequest({ ...recordRequest, params: { ...params, record: { ...params.record, msgArray: [{ ...params.record.msgArray[0], ...extra }] } } }), { code: 'INVALID_REQUEST' });
+  }
+  for (const record of [undefined, null, [], 'record']) assert.throws(() => parseRequest({ ...recordRequest, params: { ...params, record } }), { code: 'INVALID_REQUEST' });
+});
+
 test('三类原生卡片保留准确Driver字段且拒绝额外或错误字段', () => {
   const cards = [
     { kind: 'app_card', card: { title: '通知', content: '<p>内容</p>', linkUrl: '/app', pcAppCode: 'real-app' } },
