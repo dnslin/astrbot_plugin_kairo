@@ -6,7 +6,7 @@
 
 ## 安装与启动
 
-本版固定上游 [main 提交 `8507d4eb8ac458b197e34a52a60e87de6ff0a2be`](https://github.com/dnslin/kairo-driver/commit/8507d4eb8ac458b197e34a52a60e87de6ff0a2be)，原生包含准确工号卡片、图片、文件和语音发送及连接发送者绑定；保留 Edge TTS 清理、人员搜索、远程 CDP 和跨机器附件。包版本仍为 2.0.1，源码身份以提交为准；准备脚本与归档固定同一提交，不再配置或维护 Driver 自身补丁，不修改原始 checkout，不依赖本机开发链接。
+本版固定上游 [main 提交 `a9e3d69053b4016b9b62578a6fa9093741595e77`](https://github.com/dnslin/kairo-driver/commit/a9e3d69053b4016b9b62578a6fa9093741595e77)，原生包含未缓存普通文件 URI 下载、准确工号卡片/图片/文件/语音发送及连接发送者绑定；保留 Edge TTS 清理、人员搜索、远程 CDP 和跨机器附件。包版本仍为 2.0.1，源码身份以提交为准；准备脚本与归档固定同一提交，不配置或维护 Driver 自身补丁、不修改原始 checkout、不依赖本机开发链接。
 
 ### 1. 在 Windows 启动 KK9
 
@@ -111,7 +111,7 @@ Windows 也可以运行 `./start.ps1`，或 `pnpm start --config C:\kairo\config
 消息中的 `KK9ImageInfo.filePath/originalFilePath` 和 `KK9FileInfo.filePath` 属于 **Windows KK9 机器**。桥接不对它们做本地 `resolve/stat/readFile`，不扫描 KK9 缓存目录；只把完整消息资源信息交给 Driver。桥接本地 `dataDir` 与 Windows KK9 缓存是两个独立目录。
 
 - 图片统一调用 `driver.downloadImage(image, bridgeLocalTarget)`：Driver 优先读取 KK9 准确原图缓存，只有缓存不存在才由原生接口下载，再经 CDP 保存到桥接本地目标。原图字段存在时不回退缩略图；没有原图字段的旧单一资源仍可作为原始资源。
-- 普通文件统一调用 `driver.saveFile(fileInfo, bridgeLocalTarget)`：仅支持 **KK9 已缓存的普通附件**，经 CDP 保存到桥接本地目标。未缓存明确失败，不增加普通文件下载协议，不用桥接本地同名文件替代。
+- 普通文件统一调用 `driver.saveFile(fileInfo, bridgeLocalTarget)`：优先 KK9 普通附件缓存；没有路径或缓存不存在时，以文件 `uri` 调用 KK9 原生下载，再经 CDP 保存到桥接本地目标。有效缓存仍优先于 URI，权限和非普通文件等缓存错误不被下载掩盖，不用桥接本地同名文件替代。
 - 桥接仅对 Driver 保存出的本地文件检查大小并上传实际字节到 AstrBot；图片最多 20 MiB，普通文件最多 100 MiB。失败逐项带 `attachment_error` 转交，其他文字正常处理；桥接不会直接抓取消息中的 HTTP URL，也不新增下载开关。自管附件缓存沿用 `fileRetentionHours` 清理。
 
 发送侧不变：AstrBot 附件按 `file_id` 从配置好的服务下载到桥接本地 `dataDir`，继续交给 `sendImage(file)`、`sendFile(file)`、`sendVoice({filePath: file})`。三个输入路径都属于 **桥接机器**；Linux 本地文件不需要复制到共享目录，也不能当作 Windows 原生路径传入。Driver 经已有 CDP 传输图片、普通文件；语音在桥接端读取有效 WAV/MP3 后传给 Windows 编码器。图片限制 20 MiB，普通文件和语音通道限制 100 MiB。
@@ -156,7 +156,7 @@ Python 的 `kairo_get_chat_history(limit=20)` 经 `get_recent_messages` 读取�
 
 ## 依赖与验证
 
-Driver 固定到 `dnslin/kairo-driver` 的 main 提交 `8507d4eb8ac458b197e34a52a60e87de6ff0a2be`，不是以仍为 2.0.1 的包版本号或旧发布提交识别。准备脚本在 `vendor/kairo-driver-8507d4eb8ac4` 检出固定源码，再用标准 `pnpm pack` 的 prepack 构建并生成 `vendor/kairo-driver-8507d4eb8ac4.tgz`；桥接从该相对归档依赖安装，直接消费上游原生定向语音及账号核对。Driver 的 `patchedDependencies` 条目与补丁文件已删除；仅保留上游 WAV 解码及 `node-edge-tts@1.2.11.patch` 两份第三方音频依赖补丁。
+Driver 固定到 `dnslin/kairo-driver` 的 main 提交 `a9e3d69053b4016b9b62578a6fa9093741595e77`，不是以仍为 2.0.1 的包版本号或旧发布提交识别。准备脚本在 `vendor/kairo-driver-a9e3d69053b4` 检出固定源码，再用标准 `pnpm pack` 的 prepack 构建并生成 `vendor/kairo-driver-a9e3d69053b4.tgz`。普通文件 URI 保留、缓存缺失时的原生下载及 Fake 已合入 [Driver PR #20](https://github.com/dnslin/kairo-driver/pull/20)，桥接直接消费上游实现，不保留 Driver 自身补丁或 patchedDependencies 绑定。仅保留上游 WAV 解码及 `node-edge-tts@1.2.11.patch` 两份第三方音频依赖补丁。
 
 桥接工作区同时将 `node-edge-tts` override 锁定为 1.2.11，并应用同一补丁；只改 Driver 提交而保留 1.2.10 的强制版本会继续安装旧 SDK。准备脚本核对新版补丁文件名及内容，冻结安装使用对应新锁文件。既有 `sendVoice({text})` 调用链、默认音色、标准代理优先级、KK 编码及未知不重发规则不变。
 

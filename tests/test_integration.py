@@ -193,6 +193,31 @@ async def receive(adapter):
     return await asyncio.wait_for(adapter._event_queue.get(), 10)
 
 
+async def test_uncached_file_uri_becomes_readable_astrbot_file(connection):
+    adapter, command, _, _ = connection
+    payload = b"123"
+    uri = "group/server/uncached-report"
+    await command("file_resource", uri=uri, bytes_base64=base64.b64encode(payload).decode())
+    await command(
+        "emit",
+        message=incoming(
+            "uri-only-file",
+            content="请读取文件",
+            messageType="file",
+            fileInfo={"fileName": "23.txt", "fileSize": "3", "uri": uri},
+        ),
+    )
+    event = await receive(adapter)
+    attachment = next(part for part in event.get_messages() if isinstance(part, File))
+    assert attachment.name == "23.txt"
+    assert Path(await attachment.get_file()).read_bytes() == payload
+    assert "请读取文件" in event.message_obj.message_str
+    assert "尚未取得" not in event.message_obj.message_str
+    info = event.message_obj.raw_message["fileInfo"]
+    assert "uri" not in info
+    assert "filePath" not in info
+
+
 async def test_real_bridge_roundtrip_media_and_saved_group_route(connection):
     adapter, command, cache, _ = connection
     image_path = cache / "收到的图片.png"
@@ -926,6 +951,10 @@ async def test_registered_media_pushes_cached_bytes_to_selected_employee(
     )
     await command("emit", message=incoming("media-request", content="给目标员工发附件", **fields))
     event = await receive(adapter)
+    component_type = Image if kind == "image" else File
+    assert any(isinstance(part, component_type) for part in event.get_messages()), (
+        event.message_obj.raw_message
+    )
     result = await tool.call(wrap(event), name="目标员工")
     if ambiguous:
         assert "尚未发送" in result and await command("calls") == []

@@ -21,6 +21,7 @@ let employees = [];
 let searchEmployees = [];
 let messages = [];
 const imageResources = new Map();
+const fileResources = new Map();
 const cachedFiles = new Map();
 const groupMembers = new Map();
 const bridge = new Bridge(config, () => {
@@ -32,6 +33,7 @@ const bridge = new Bridge(config, () => {
   driver.setMessages(structuredClone(messages));
   for (const [sessionId, members] of groupMembers) driver.setGroupMembers(sessionId, structuredClone(members));
   for (const [uri, bytes] of imageResources) driver.setImageResource(uri, bytes);
+  for (const [uri, bytes] of fileResources) driver.setFileResource(uri, bytes);
   for (const [path, bytes] of cachedFiles) driver.setCachedFile(path, bytes);
   drivers.push(driver);
   return driver;
@@ -54,6 +56,11 @@ try {
       const bytes = Buffer.from(command.bytes_base64, 'base64');
       imageResources.set(command.uri, bytes);
       driver.setImageResource(command.uri, bytes);
+      result = true;
+    } else if (command.cmd === 'file_resource') {
+      const bytes = Buffer.from(command.bytes_base64, 'base64');
+      fileResources.set(command.uri, bytes);
+      driver.setFileResource(command.uri, bytes);
       result = true;
     } else if (command.cmd === 'cached_file') {
       const bytes = Buffer.from(command.bytes_base64, 'base64');

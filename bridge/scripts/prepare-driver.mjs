@@ -5,9 +5,9 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const revision = '8507d4eb8ac458b197e34a52a60e87de6ff0a2be';
+const revision = 'a9e3d69053b4016b9b62578a6fa9093741595e77';
 // 使用新目录保留旧版本源码及使用者可能的修改。
-const source = resolve(root, 'vendor', 'kairo-driver-8507d4eb8ac4');
+const source = resolve(root, 'vendor', 'kairo-driver-a9e3d69053b4');
 const repository = process.env.KAIRO_DRIVER_SOURCE || 'https://github.com/dnslin/kairo-driver.git';
 const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
 
@@ -49,11 +49,11 @@ for (const name of ['@audio__decode-wav@1.5.0.patch', 'node-edge-tts@1.2.11.patc
 run(pnpm, ['install', '--frozen-lockfile'], source);
 // 从标准包归档安装源码及编译产物，不依赖开发目录或 checkout 硬链接。
 // pack 的 prepack 已执行 build，pnpm 固定归档时间戳；gzip 的 OS 字节另行统一。
-const archive = '../kairo-driver-8507d4eb8ac4.tgz';
+const archive = '../kairo-driver-a9e3d69053b4.tgz';
 run(pnpm, ['pack', '--out', archive], source);
 // gzip 第10字节仅标识构建系统，Windows/Linux 分别为10/3；统一为255（未知），不改压缩内容。
 const archivePath = resolve(source, archive);
 const packed = readFileSync(archivePath);
 packed[9] = 255;
 writeFileSync(archivePath, packed);
-console.log(`Driver ${revision} 已准备完成（vendor/kairo-driver-8507d4eb8ac4.tgz）；继续运行 pnpm install --frozen-lockfile。`);
+console.log(`Driver ${revision} 已准备完成（vendor/kairo-driver-a9e3d69053b4.tgz）；继续运行 pnpm install --frozen-lockfile。`);
