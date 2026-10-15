@@ -270,7 +270,7 @@ Driver main 已合入并推送提交 `db186e05a7df6b94de041a9e8f9f8787e1d9d3a6`�
 
 第二次CI已通过双平台冻结安装、Linux桥接及AstrBot集成检查；Windows的既有原图中断恢复测试暴露Node24.21.0/tsx工作线程继承 `--input-type=module` 后拒绝文件入口的问题。测试子进程改用隔离目录中的真实 `.mjs` 文件，不再使用 `--input-type/-e`；保留退出码17、重启后完整原图字节与大小断言，不改生产附件逻辑。该回归在本机默认Node及隔离下载的CI同版Windows Node24.21.0均通过；临时入口由既有finally清理。
 
-## 当前群全员资料工具（未发布）
+## 当前群全员资料工具（0.7.0，实现验证记录）
 
 新增 `kairo_get_group_members`，打通已固定Driver的 `getGroupMembers` → Node `get_group_members` → Python公共客户端 → 真实AstrBot注册工具。使用原始消息保存的原生群会话，不受隔离上下文或群显示字段改写影响；无参数、不跨群，私聊/非Kairo在筛选和执行入口均拒绝，保留人格停用。普通群成员可读，现有群和发起人名单在查询前及返回前复查。独立只读路径不创建操作ID、不写发送状态或设置事件发送完成标志；缺失资料保留null，错误不伪装空群或部分成功。
 
