@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { pathToFileURL } from 'node:url';
+import { runInNewContext } from 'node:vm';
 import test from 'node:test';
 import { WebSocketServer, WebSocket } from 'ws';
-import { FakeKK9Driver, type KK9EmployeeSearchItem, type KK9EmployeeSearchResult, type KK9Message, type SendOutcome, InMemorySendOperationStore } from '@kairo/driver';
+import { FakeKK9Driver, type IKK9Driver, type KK9EmployeeSearchItem, type KK9EmployeeSearchResult, type KK9GroupMember, type KK9Message, type SendOutcome, InMemorySendOperationStore } from '@kairo/driver';
 import { Bridge } from '../src/bridge.js';
 import { parseConfig } from '../src/config.js';
 
@@ -658,6 +662,114 @@ test('员工搜索通过真实 JSON WebSocket 完整返回候选，不回退身�
     const disconnected = await rpc({ keyword: '张三' });
     assert.equal(disconnected.ok, false);
     assert.deepEqual(disconnected.error, { code: 'BRIDGE_ERROR', message: '搜索连接中断' });
+    assert.equal(driver.recordedCalls.length, 0);
+  } finally {
+    bridge.stop(); await running;
+    for (const socket of server.clients) socket.terminate();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('群成员经已安装 Driver 原生查询和 JSON RPC 返回全员，空群与失败分离且不发送', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'kairo-group-members-'));
+  const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+  await new Promise<void>((resolve) => server.once('listening', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const config = parseConfig({ serverUrl: `http://127.0.0.1:${address.port}`, token: 'x'.repeat(32), expectedUserId: '1', reconnectDelayMs: 100 }, root);
+  const members: KK9GroupMember[] = [
+    { id: '2', name: '张三', loginName: '00AbC', position: '平台工程师', departmentPaths: ['总公司 / 研发部', '总公司 / 项目组'] },
+    { id: '3', name: null, loginName: null, position: null, departmentPaths: null },
+    ...Array.from({ length: 500 }, (_, index) => ({ id: String(index + 10), name: `成员-${index}`, loginName: `Employee-${index}`, position: '工程师', departmentPaths: ['总公司 / 研发部'] })),
+  ];
+  let failure: 'query' | 'profile' | null = null;
+  class GroupRenderer extends EventEmitter {
+    async evaluate(script: string): Promise<unknown> {
+      return runInNewContext(script, { window: { ipcRenderer: this }, setTimeout, clearTimeout });
+    }
+    send(channel: string, request: { id: number; args: [string, ...unknown[]] }): void {
+      assert.equal(channel, 'data');
+      const [method, key] = request.args;
+      let data: unknown;
+      switch (method) {
+        case 'getSessionBySessionID':
+          data = key === 8 ? { id: 8, type: 1, typeID: 88 } : key === 9 ? { id: 9, type: 1, typeID: 99 } : key === 10 ? { id: 10, type: 0, typeID: 2 } : null;
+          break;
+        case 'getGroupsAllMembers':
+          assert.ok(key === 88 || key === 99, '原生群对象必须来自会话，不能把会话 ID 当群对象');
+          data = key === 88 ? [...members.map(member => ({ id: Number(member.id) })), { id: 2 }] : [];
+          break;
+        case 'getMemberDetail': {
+          const member = members.find(item => Number(item.id) === key)!;
+          if (key === 3 && failure === 'query') {
+            queueMicrotask(() => this.emit(`data-${request.id}`, {}, { code: 73, error: '原生档案不可用' }));
+            return;
+          }
+          data = { id: key === 3 && failure === 'profile' ? 999 : key, name: member.name, login_name: member.loginName, pos: member.position };
+          break;
+        }
+        case 'getAllDeptPaths':
+          data = (members.find(item => Number(item.id) === key)!.departmentPaths ?? []).map(path => ({ deptPaths: path.split(' / ').map(name => ({ name })) }));
+          break;
+        default: throw new Error(`群成员查询不得调用 ${method}`);
+      }
+      queueMicrotask(() => this.emit(`data-${request.id}`, {}, { code: 0, data }));
+    }
+  }
+  // 包 exports 不公开内部子路径，须从安装入口动态定位以测试消费方产物及原生 IPC 脚本。
+  const entry = pathToFileURL(createRequire(import.meta.url).resolve('@kairo/driver'));
+  const { BridgeOrgOps }: { BridgeOrgOps: new (cdp: GroupRenderer) => Pick<IKK9Driver, 'getGroupMembers'> } = await import(new URL('./bridge/org-ops.js', entry).href);
+  const native = new GroupRenderer();
+  const ops = new BridgeOrgOps(native);
+  const driver = new FakeKK9Driver();
+  driver.setCurrentUserId('1');
+  driver.getGroupMembers = ops.getGroupMembers.bind(ops);
+  driver.getSessions = async () => { throw new Error('不能用展示会话列表代替原生群查询'); };
+  driver.getUserProfile = async () => { throw new Error('不能用展示档案补群成员资料'); };
+  const responses = new Map<string, any>();
+  let peer: WebSocket | undefined, ready = false;
+  server.on('connection', (socket) => {
+    peer = socket;
+    socket.on('message', (raw) => {
+      const value = JSON.parse(raw.toString());
+      if (value.type === 'hello') socket.send(JSON.stringify({ type: 'ready', version: 2 }));
+      else if (value.type === 'response') responses.set(value.id, value);
+    });
+  });
+  const bridge = new Bridge(config, () => driver, (_level, text) => { if (text.startsWith('AstrBot 桥接已连接')) ready = true; });
+  const running = bridge.run();
+  let counter = 0;
+  const rpc = async (params: Record<string, unknown>) => {
+    const id = `group-rpc-${++counter}`;
+    peer!.send(JSON.stringify({ type: 'request', id, action: 'get_group_members', params }));
+    await until(() => responses.has(id));
+    return responses.get(id);
+  };
+  try {
+    await until(() => ready);
+    assert.deepEqual(await rpc({ session_id: '8' }), { type: 'response', id: `group-rpc-${counter}`, ok: true, result: { members } });
+    assert.deepEqual(await rpc({ session_id: '9' }), { type: 'response', id: `group-rpc-${counter}`, ok: true, result: { members: [] } });
+    for (const params of [{ session_id: '08' }, { session_id: '测试群' }, { session_id: '8', operation_id: 'must-not-send' }, { session_id: '8', limit: 1 }]) {
+      assert.equal((await rpc(params)).error.code, 'INVALID_REQUEST');
+    }
+    for (const [session_id, code] of [['10', 'INVALID_SESSION_ID'], ['88', 'IPC_INVALID_RESPONSE']]) {
+      const response = await rpc({ session_id });
+      assert.equal(response.ok, false);
+      assert.equal(response.error.code, code);
+      assert.equal('result' in response, false);
+    }
+    for (const [mode, code] of [
+      ['query', 'IPC_QUERY_FAILED'],
+      ['profile', 'IPC_INVALID_RESPONSE'],
+    ] as const) {
+      failure = mode;
+      const response = await rpc({ session_id: '8' });
+      assert.equal(response.ok, false);
+      assert.equal(response.error.code, code);
+      assert.match(response.error.message, /UID 3/);
+      assert.equal('result' in response, false, '后续成员失败不得返回已读取的部分成员');
+    }
     assert.equal(driver.recordedCalls.length, 0);
   } finally {
     bridge.stop(); await running;

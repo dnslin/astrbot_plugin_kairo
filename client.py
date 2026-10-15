@@ -129,6 +129,49 @@ class KairoClient:
             seen.add(uid)
         return result
 
+    async def get_group_members(
+        self, session_id: str, *, sender_id: str | None = None
+    ) -> list[dict]:
+        """读取完整原生群资料；沿用当前名单，失败不返回部分成员。"""
+        if (
+            not isinstance(session_id, str)
+            or not session_id.isascii()
+            or not session_id.isdecimal()
+            or session_id.startswith("0")
+        ):
+            raise ValueError(f"需要原生 KK9 群会话 ID：{session_id}")
+        self._policy.check_group(session_id)
+        if sender_id is not None:
+            await self._check_employee_id(sender_id)
+        response = await self._server.request(
+            "get_group_members", {"session_id": session_id}, timeout=35
+        )
+        if not isinstance(response, dict) or not isinstance(response.get("members"), list):
+            raise BridgeError("INVALID_RESPONSE", "群成员查询未返回完整成员列表")
+        members = response["members"]
+        required = {"id", "name", "loginName", "departmentPaths", "position"}
+        seen: set[str] = set()
+        for member in members:
+            if not isinstance(member, dict) or not required.issubset(member):
+                raise BridgeError("INVALID_RESPONSE", "群成员档案缺少必要字段")
+            uid = member["id"]
+            if not isinstance(uid, str) or not uid.strip() or uid in seen:
+                raise BridgeError("INVALID_RESPONSE", "群成员 UID 无效或重复")
+            for field in ("name", "loginName", "position"):
+                if member[field] is not None and not isinstance(member[field], str):
+                    raise BridgeError("INVALID_RESPONSE", f"群成员 {field} 类型无效")
+            paths = member["departmentPaths"]
+            if paths is not None and (
+                not isinstance(paths, list) or any(not isinstance(path, str) for path in paths)
+            ):
+                raise BridgeError("INVALID_RESPONSE", "群成员部门路径类型无效")
+            seen.add(uid)
+        # 全量档案可能等待数十秒，返回前重新应用这段时间内更新的名单。
+        self._policy.check_group(session_id)
+        if sender_id is not None:
+            await self._check_employee_id(sender_id)
+        return members
+
     async def notify_employee_uid(
         self,
         user_id: str,

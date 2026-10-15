@@ -65,6 +65,24 @@ test('员工搜索只接受非空 keyword，不接受分页、身份或发送参
   assert.throws(() => parseRequest({ ...search, action: 'search_employee' }), { code: 'UNSUPPORTED_ACTION' });
 });
 
+test('群成员只接受规范原生正整数会话 ID，不接受群对象、名称或额外参数', () => {
+  const group = { type: 'request', id: 'members', action: 'get_group_members', params: { session_id: '23' } };
+  assert.deepEqual(parseRequest(group), group);
+  assert.deepEqual(parseRequest({ ...group, params: { session_id: String(Number.MAX_SAFE_INTEGER) } }).params, { session_id: String(Number.MAX_SAFE_INTEGER) });
+  for (const session_id of [undefined, null, '', ' ', '\r\n', '0', '01', '-2', '+23', '1-23', ' 23', '23 ', '2.3', '2e3', '9007199254740992', 'a'.repeat(257), 23, true, {}, []]) {
+    assert.throws(() => parseRequest({ ...group, params: { session_id } }), { code: 'INVALID_REQUEST' });
+  }
+  for (const extra of [
+    { operation_id: 'must-not-send' }, { receiver_id: '88' }, { group_id: '88' }, { group_name: '测试群' },
+    { target_session_id: '23' }, { user_id: '2' }, { page: 1 }, { limit: 10 }, { timeoutMs: 0 }, { text: '通知' },
+  ]) {
+    assert.throws(() => parseRequest({ ...group, params: { ...group.params, ...extra } }), { code: 'INVALID_REQUEST' });
+  }
+  for (const params of [undefined, null, [], '23', 23]) {
+    assert.throws(() => parseRequest({ ...group, params }), { code: 'INVALID_REQUEST' });
+  }
+});
+
 test('三类原生卡片保留准确Driver字段且拒绝额外或错误字段', () => {
   const cards = [
     { kind: 'app_card', card: { title: '通知', content: '<p>内容</p>', linkUrl: '/app', pcAppCode: 'real-app' } },

@@ -96,6 +96,7 @@ CI 的 Node 检查覆盖 Windows/Linux，集成任务引用 `v4.29.0-beta.1`。0
 - `send_media(target_session_id, media, *, sender_id=None, operation_id=None) -> dict`：向明确原生会话发送上述缓存描述，复查动态名单并返回原生结果；跨会话使用 `notify_employee_uid(..., media=...)`。
 - `get_send_status(operation_id) -> dict`：只查询已存在意图，不再次发送。
 - `get_sessions() -> list[dict]`：只读原生会话，用于准确路由和群名单配置。
+- `get_group_members(session_id, *, sender_id=None) -> list[dict]`：完整原生群成员资料，字段为字符串UID、可空真实工号/姓名/全部可见部门路径/岗位；沿用当前群及发起人规则，查询返回前再次检查。单次等待35秒，拒绝字段缺失、非法字段类型和重复UID，不返回部分资料或静默回退。模型工具仅从当前真实群事件传入原生会话和发起人，不允许选择其他群。
 - `send_chain(target_session_id, message, sender_id=None) -> None`：顺序发送支持的组件，失败或未知抛含 `result` 的 `BridgeError`；事件回复保留原群发送者作名单复查。
 
 管理员命令为 `/kairo notify <平台实例ID> <准确工号> <正文>`，仍只发送文本，不开放额外 HTTP 通知接口。语音及无 `name` 的卡片/图片/文件工具发当前会话；卡片和附件带 `name` 时共用管理员姓名通知与编号选择，在当前 Kairo 实例内推送员工私聊，不允许模型指定实例、会话、UID 或工号。图片/文件的宿主 `path` 仅管理员可用，默认转发当前消息对应类型附件。通讯超时/断线且未确认成功的 Python 发送结果额外保留 `code`，不重发。工具使用及网络前提见主说明，内部字段见 [协议 v2](PROTOCOL.md)。
@@ -268,4 +269,12 @@ Driver main 已合入并推送提交 `db186e05a7df6b94de041a9e8f9f8787e1d9d3a6`�
 准备脚本继续使用标准 `pnpm pack`，随后将该gzip标记统一为255（未知系统）；不改变压缩内容、不禁用校验、不改Driver源码。真实Windows准备脚本生成的归档与同样统一标记后的真实Linux归档逐字节相等，解压内容与修复前完全相同。Windows重新准备、`pnpm install --lockfile-only --offline` 及冻结安装成功；锁文件仅更新该归档的完整性值，没有其他依赖升级。现有双平台CI的“准备+冻结安装”路径已在修复前捕获问题，继续作为跨平台回归验证。
 
 第二次CI已通过双平台冻结安装、Linux桥接及AstrBot集成检查；Windows的既有原图中断恢复测试暴露Node24.21.0/tsx工作线程继承 `--input-type=module` 后拒绝文件入口的问题。测试子进程改用隔离目录中的真实 `.mjs` 文件，不再使用 `--input-type/-e`；保留退出码17、重启后完整原图字节与大小断言，不改生产附件逻辑。该回归在本机默认Node及隔离下载的CI同版Windows Node24.21.0均通过；临时入口由既有finally清理。
+
+## 当前群全员资料工具（未发布）
+
+新增 `kairo_get_group_members`，打通已固定Driver的 `getGroupMembers` → Node `get_group_members` → Python公共客户端 → 真实AstrBot注册工具。使用原始消息保存的原生群会话，不受隔离上下文或群显示字段改写影响；无参数、不跨群，私聊/非Kairo在筛选和执行入口均拒绝，保留人格停用。普通群成员可读，现有群和发起人名单在查询前及返回前复查。独立只读路径不创建操作ID、不写发送状态或设置事件发送完成标志；缺失资料保留null，错误不伪装空群或部分成功。
+
+先以真实框架注册工具回归证明工具缺失，补齐实现后17项专项通过。实际执行 `pnpm check` 构建及88项Node通过，包含安装后的真实Driver生成原生IPC脚本、502成员、去重、空群及后续档案错误；AstrBot虚拟环境 `python.exe -m pytest -q --tb=short` 全套376项通过，包含201成员跨语言原群路由和未知会话错误。临时反转群聊判断后，私聊拒绝回归按预期失败；恢复后2项边界回归通过。`ruff check *.py tests`、`ruff format --check *.py tests` 通过（21文件），保留宿主已有audioop弃用警告。
+
+独立 `python.exe artifacts/tmp/group-members-smoke.py` 运行真实AstrBot事件、已注册工具、鉴权HTTP/WS、编译后的桥接和SQLite；KK9使用上游Fake，外部遥测关闭。确认普通群成员可查询，改写宿主群字段仍读取原群，同名人员/前导零工号/多部门/null原样保留，动态群名单拒绝，私聊隐藏且拒绝，原生未知会话错误不是空群。原生发送次数及SQLite发送意图数均为0。一次性脚本与隔离数据验证后清理，未连接真实KK9、发布版本、重启生产服务或声称真实模型/服务器名单验收通过。
 

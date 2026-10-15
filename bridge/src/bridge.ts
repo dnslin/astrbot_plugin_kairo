@@ -221,6 +221,7 @@ export class Bridge {
     switch (request.action) {
       case 'get_send_status': return driver.getSendStatus(request.params.operation_id);
       case 'get_sessions': return { sessions: await driver.getSessions() };
+      case 'get_group_members': return { members: await driver.getGroupMembers(request.params.session_id) };
       case 'search_employees': return driver.searchEmployees(request.params.keyword);
       case 'get_user_profile': {
         const profile = await driver.getUserProfile(request.params.user_id);

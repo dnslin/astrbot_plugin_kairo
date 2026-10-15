@@ -1,4 +1,5 @@
 from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.platform import MessageType
 from astrbot.api.star import Context, Star
 from astrbot.core.provider.entities import ProviderRequest
 from astrbot.core.star.filter.command import GreedyStr
@@ -7,6 +8,7 @@ from .notifications import KairoNotifications, KairoNotifyEmployeeTool, KairoSel
 from .tools import (
     KAIRO_ADMIN_TOOL_NAMES,
     KAIRO_TOOL_NAMES,
+    KairoGetGroupMembersTool,
     KairoSendAppCardTool,
     KairoSendBizCardTool,
     KairoSendFileTool,
@@ -33,6 +35,7 @@ class KairoPlugin(Star):
             KairoSendBizCardTool(notifications),
             KairoSendImageTool(notifications),
             KairoSendFileTool(notifications),
+            KairoGetGroupMembersTool(),
             KairoNotifyEmployeeTool(notifications),
             KairoSelectEmployeeTool(notifications),
         )
@@ -48,10 +51,10 @@ class KairoPlugin(Star):
             return
         if not is_kairo_event(event):
             excluded = KAIRO_TOOL_NAMES
-        elif not event.is_admin():
-            excluded = KAIRO_ADMIN_TOOL_NAMES
         else:
-            return
+            excluded = frozenset() if event.is_admin() else KAIRO_ADMIN_TOOL_NAMES
+            if event.message_obj.type != MessageType.GROUP_MESSAGE:
+                excluded = excluded | {"kairo_get_group_members"}
         for name in excluded:
             req.func_tool.remove_tool(name)
 

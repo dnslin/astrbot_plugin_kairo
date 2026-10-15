@@ -1,14 +1,16 @@
-"""Kairo 媒体、卡片工具及请求级权限分组。"""
+"""Kairo 媒体、卡片、群成员查询工具及请求级权限分组。"""
 
 from __future__ import annotations
 
 import asyncio
+import json
 from html import escape
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from astrbot.api.message_components import File, Image
+from astrbot.api.platform import MessageType
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.astr_agent_context import AstrAgentContext
@@ -30,6 +32,7 @@ KAIRO_TOOL_NAMES = (
             "kairo_send_app_card",
             "kairo_send_url_card",
             "kairo_send_biz_card",
+            "kairo_get_group_members",
         }
     )
     | KAIRO_ADMIN_TOOL_NAMES
@@ -170,6 +173,40 @@ async def _call(
         )
     # 同批并发调用只等待首次尝试；取消一个重复等待者不能取消原始发送。
     return await asyncio.shield(task)
+
+
+class KairoGetGroupMembersTool(FunctionTool[AstrAgentContext]):
+    def __init__(self) -> None:
+        super().__init__(
+            name="kairo_get_group_members",
+            description=(
+                "用户询问当前 Kairo 群有哪些成员、人数或成员资料时调用，只读查询本群全员。"
+                "返回 UID、真实工号、姓名、全部可见部门路径和岗位；缺失字段为 null。"
+                "不接受其他群或分页参数，不发送消息。资料来自 KK9 当前可读名单，不保证服务器实时最新。"
+            ),
+            parameters={"type": "object", "properties": {}, "additionalProperties": False},
+        )
+
+    async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str:
+        event = context.context.event
+        if not is_kairo_event(event) or event.message_obj.type != MessageType.GROUP_MESSAGE:
+            return "错误（UNSUPPORTED_SESSION）：该工具仅可查询当前真实 Kairo 群聊的成员。"
+        try:
+            validate(kwargs, self.parameters)
+        except ValidationError as exc:
+            return f"错误（INVALID_ARGUMENT）：{exc.message}"
+        try:
+            members = await event.adapter.get_client().get_group_members(
+                event.target_session_id, sender_id=event.sender_id
+            )
+        except BridgeError as exc:
+            return f"错误（{exc.code}）：{exc.message}"
+        except ValueError as exc:
+            return f"错误（INVALID_ARGUMENT）：{exc}"
+        return json.dumps(
+            {"session_id": event.target_session_id, "total": len(members), "members": members},
+            ensure_ascii=False,
+        )
 
 
 class KairoSendVoiceTool(FunctionTool[AstrAgentContext]):

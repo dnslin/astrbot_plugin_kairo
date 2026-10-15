@@ -1,12 +1,13 @@
 """按需工具经真实框架 schema、事件和 KairoClient 策略发送。"""
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import jsonschema
 import pytest
 from astrbot.api.event import AstrMessageEvent
-from astrbot.api.platform import PlatformMetadata
+from astrbot.api.platform import MessageType, PlatformMetadata
 from astrbot.api.star import Context
 from astrbot.core.agent.hooks import BaseAgentRunHooks
 from astrbot.core.agent.run_context import ContextWrapper
@@ -550,3 +551,141 @@ async def test_same_card_tool_cannot_change_route_after_first_event_attempt(dire
             ("app_card", "12345")
         ]
         assert "search_employees" not in boundary.lookups
+
+
+class GroupBoundary:
+    def __init__(self, response=None, *, error=None, block=False):
+        self.response = {"members": []} if response is None else response
+        self.error = error
+        self.requests = []
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        if not block:
+            self.release.set()
+
+    async def request(self, action, params, *, timeout=None):
+        self.requests.append(action)
+        if action == "get_user_profile":
+            return {"profile": {"loginName": "EmployeeA"}}
+        assert action == "get_group_members", f"只读工具不应执行 {action}"
+        self.started.set()
+        await self.release.wait()
+        if self.error:
+            raise self.error
+        return self.response
+
+
+def registered_group_tool():
+    context = make_context()
+    KairoPlugin(context)
+    return next(
+        tool
+        for tool in context.provider_manager.llm_tools.func_list
+        if tool.name == "kairo_get_group_members"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kwargs", [{"session_id": "999"}, {"name": "其他群"}, {"limit": 1}])
+async def test_group_members_tool_rejects_model_selected_targets_or_truncation(kwargs):
+    boundary = GroupBoundary()
+    result = await registered_group_tool().call(wrap(make_event(boundary)), **kwargs)
+    assert "INVALID_ARGUMENT" in result
+    assert boundary.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native,private", [(False, False), (True, True)])
+async def test_group_members_tool_rejects_non_kairo_or_private_events(native, private):
+    boundary = GroupBoundary()
+    event = make_event(boundary, native=native)
+    event.role = "admin"
+    if private:
+        event.message_obj.type = MessageType.FRIEND_MESSAGE
+    result = await registered_group_tool().call(wrap(event))
+    assert "错误" in result
+    assert boundary.requests == []
+
+
+@pytest.mark.asyncio
+async def test_group_members_empty_query_does_not_mark_event_as_sent():
+    boundary = GroupBoundary()
+    event = make_event(boundary)
+    result = await registered_group_tool().call(wrap(event))
+    assert json.loads(result) == {"session_id": "12345", "total": 0, "members": []}
+    assert not event._has_send_oper
+    assert event.get_result() is None
+
+
+@pytest.mark.asyncio
+async def test_group_members_native_failure_is_not_presented_as_empty_success():
+    boundary = GroupBoundary(error=BridgeError("IPC_QUERY_FAILED", "第二位成员档案不可读"))
+    event = make_event(boundary)
+    result = await registered_group_tool().call(wrap(event))
+    assert "IPC_QUERY_FAILED" in result and "第二位成员档案不可读" in result
+    assert not event._has_send_oper
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["group", "user"])
+async def test_group_members_dynamic_policy_blocks_result_after_lookup(scope):
+    boundary = GroupBoundary(block=True)
+    config = {}
+    client = KairoClient(boundary, KairoAccessPolicy(config))
+    pending = asyncio.create_task(client.get_group_members("12345", sender_id="sender-uid"))
+    await asyncio.wait_for(boundary.started.wait(), 2)
+    config[f"{scope}_blacklist"] = ["12345" if scope == "group" else "EmployeeA"]
+    boundary.release.set()
+    with pytest.raises(BridgeError) as error:
+        await pending
+    assert error.value.code == "ACCESS_DENIED"
+
+
+@pytest.mark.asyncio
+async def test_group_members_existing_group_blacklist_blocks_native_read():
+    boundary = GroupBoundary()
+    event = make_event(boundary, {"group_blacklist": ["12345"]})
+    result = await registered_group_tool().call(wrap(event))
+    assert "ACCESS_DENIED" in result
+    assert boundary.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "members",
+    [
+        "not a member list",
+        [{"id": "42", "name": "员工"}],
+        [{"id": "42", "name": None, "loginName": None, "position": 7, "departmentPaths": None}],
+        [{"id": "42", "name": None, "loginName": None, "position": None, "departmentPaths": [7]}],
+        [{"id": "42", "name": None, "loginName": None, "position": None, "departmentPaths": None}]
+        * 2,
+    ],
+)
+async def test_group_members_invalid_or_duplicate_profiles_reject_whole_response(members):
+    client = KairoClient(GroupBoundary({"members": members}), KairoAccessPolicy({}))
+    with pytest.raises(BridgeError) as error:
+        await client.get_group_members("12345")
+    assert error.value.code == "INVALID_RESPONSE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("admin", [False, True])
+async def test_group_members_filter_limits_tool_to_group_without_reenabling_persona(admin):
+    context = make_context()
+    plugin = KairoPlugin(context)
+    tools = context.provider_manager.llm_tools.func_list
+    tool = next(tool for tool in tools if tool.name == "kairo_get_group_members")
+    event = make_event(GroupBoundary())
+    event.role = "admin" if admin else "member"
+    request = ProviderRequest(func_tool=ToolSet(list(tools)))
+    await plugin.filter_kairo_tools(event, request)
+    assert request.func_tool.get_tool(tool.name) is tool
+    event.message_obj.type = MessageType.FRIEND_MESSAGE
+    request = ProviderRequest(func_tool=ToolSet(list(tools)))
+    await plugin.filter_kairo_tools(event, request)
+    assert request.func_tool.get_tool(tool.name) is None
+    event.message_obj.type = MessageType.GROUP_MESSAGE
+    request = ProviderRequest(func_tool=ToolSet([item for item in tools if item is not tool]))
+    await plugin.filter_kairo_tools(event, request)
+    assert request.func_tool.get_tool(tool.name) is None

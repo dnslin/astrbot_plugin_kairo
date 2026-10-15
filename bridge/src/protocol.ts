@@ -1,4 +1,4 @@
-import type { KK9AppMsgOptions, KK9BizMsgOptions, KK9Employee, KK9EmployeeSearchResult, KK9Session, KK9UrlCardOptions, SendResult } from '@kairo/driver';
+import type { KK9AppMsgOptions, KK9BizMsgOptions, KK9Employee, KK9EmployeeSearchResult, KK9GroupMember, KK9Session, KK9UrlCardOptions, SendResult } from '@kairo/driver';
 
 export class RequestError extends Error {
   constructor(public readonly code: string, message: string) { super(message); }
@@ -24,9 +24,10 @@ export type BridgeRequest =
   | Request<'send_media_to_user', { operation_id: string; login_name: string; kind: 'image' | 'file' } & FileParams>
   | Request<'get_send_status', { operation_id: string }>
   | Request<'get_sessions', Record<string, never>>
+  | Request<'get_group_members', { session_id: string }>
   | Request<'get_user_profile', { user_id: string }>
   | Request<'search_employees', { keyword: string }>;
-export type BridgeResult = SendResult | { sessions: KK9Session[] } | { profile: KK9Employee | null } | KK9EmployeeSearchResult;
+export type BridgeResult = SendResult | { sessions: KK9Session[] } | { members: KK9GroupMember[] } | { profile: KK9Employee | null } | KK9EmployeeSearchResult;
 
 function object(value: unknown, name: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new RequestError('INVALID_REQUEST', `${name}无效`);
@@ -85,6 +86,12 @@ export function parseRequest(value: unknown): BridgeRequest {
     fields(params, [], 'params');
     return { type: 'request', id, action: raw.action, params: {} };
   }
+  if (raw.action === 'get_group_members') {
+    fields(params, ['session_id'], 'params');
+    const session_id = text(params.session_id, 'session_id');
+    if (!/^[1-9]\d*$/.test(session_id) || !Number.isSafeInteger(Number(session_id))) throw new RequestError('INVALID_REQUEST', 'session_id 必须为原生正整数会话 ID 字符串');
+    return { type: 'request', id, action: raw.action, params: { session_id } };
+  }
   if (raw.action === 'get_user_profile') {
     fields(params, ['user_id'], 'params');
     return { type: 'request', id, action: raw.action, params: { user_id: text(params.user_id, 'user_id') } };
@@ -93,7 +100,7 @@ export function parseRequest(value: unknown): BridgeRequest {
     fields(params, ['keyword'], 'params');
     return { type: 'request', id, action: raw.action, params: { keyword: text(params.keyword, 'keyword') } };
   }
-  if (!['send', 'send_to_user', 'send_card_to_user', 'send_media_to_user', 'get_send_status'].includes(String(raw.action))) throw new RequestError('UNSUPPORTED_ACTION', '仅支持 send、send_to_user、send_card_to_user、send_media_to_user、get_send_status、get_sessions、get_user_profile 和 search_employees');
+  if (!['send', 'send_to_user', 'send_card_to_user', 'send_media_to_user', 'get_send_status'].includes(String(raw.action))) throw new RequestError('UNSUPPORTED_ACTION', '仅支持 send、send_to_user、send_card_to_user、send_media_to_user、get_send_status、get_sessions、get_group_members、get_user_profile 和 search_employees');
   const operation_id = text(params.operation_id, 'operation_id');
   if (raw.action === 'get_send_status') {
     fields(params, ['operation_id'], 'params');
@@ -157,6 +164,7 @@ export function parseRequest(value: unknown): BridgeRequest {
 
 export function serializeResult(result: BridgeResult): Record<string, unknown> {
   if ('sessions' in result) return { sessions: result.sessions };
+  if ('members' in result) return { members: result.members };
   if ('profile' in result) return { profile: result.profile };
   if ('employees' in result) return { employees: result.employees, hasMore: result.hasMore };
   const { operationId, status, messageId, sessionId, error, nativeCode, receipt, isPreTrigger, verifyLatencyMs } = result;

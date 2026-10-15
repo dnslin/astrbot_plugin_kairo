@@ -964,3 +964,68 @@ async def test_registered_media_pushes_cached_bytes_to_selected_employee(
     )
     assert f"sessionId={private['id']}" in result
     assert private["id"] != event.target_session_id
+
+
+async def test_group_members_tool_reads_full_original_group_without_sending(
+    connection, kairo_tools
+):
+    adapter, command, _, _ = connection
+    tools, wrap = kairo_tools
+    members = [
+        {
+            "id": str(uid),
+            "name": "同名员工" if uid <= 2 else f"员工{uid}",
+            "loginName": f"{uid:06}",
+            "departmentPaths": ["研发 / 后端", "项目"],
+            "position": "工程师",
+        }
+        for uid in range(1, 202)
+    ]
+    members[2] = {
+        "id": "3",
+        "name": None,
+        "loginName": None,
+        "departmentPaths": None,
+        "position": None,
+    }
+    await command("group_members", session_id="793803", members=[*members, members[0]])
+    await command(
+        "group_members",
+        session_id="793804",
+        members=[
+            {
+                "id": "999",
+                "name": "别群员工",
+                "loginName": None,
+                "departmentPaths": None,
+                "position": None,
+            }
+        ],
+    )
+    await command("emit", message=incoming("group-read", content="列出本群全员资料"))
+    event = await receive(adapter)
+    context = wrap(event)
+    event.role = "member"
+    # 宿主上下文可被隔离或改写，读取目标必须始终来自原消息的群会话。
+    event.session_id = "another-conversation"
+    event.message_obj.group_id = "793804"
+    result = json.loads(await tools["kairo_get_group_members"].call(context))
+    assert result == {"session_id": "793803", "total": 201, "members": members}
+    assert await command("calls") == []
+    assert not event._has_send_oper
+    assert event.get_result() is None
+
+
+async def test_group_members_unknown_native_session_preserves_error_not_empty_list(
+    connection, kairo_tools
+):
+    adapter, command, _, _ = connection
+    tools, wrap = kairo_tools
+    await command("emit", message=incoming("missing-group-read"))
+    event = await receive(adapter)
+    await command("sessions", sessions=SESSIONS[:2])
+    result = await tools["kairo_get_group_members"].call(wrap(event))
+    assert "IPC_INVALID_RESPONSE" in result
+    assert "793803" in result
+    assert await command("calls") == []
+    assert not event._has_send_oper

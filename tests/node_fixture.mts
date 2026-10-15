@@ -22,6 +22,7 @@ let searchEmployees = [];
 let messages = [];
 const imageResources = new Map();
 const cachedFiles = new Map();
+const groupMembers = new Map();
 const bridge = new Bridge(config, () => {
   driver = new FakeKK9Driver(store);
   driver.setCurrentUserId(config.expectedUserId);
@@ -29,6 +30,7 @@ const bridge = new Bridge(config, () => {
   driver.setEmployees(structuredClone(employees));
   driver.setSearchEmployees(structuredClone(searchEmployees));
   driver.setMessages(structuredClone(messages));
+  for (const [sessionId, members] of groupMembers) driver.setGroupMembers(sessionId, structuredClone(members));
   for (const [uri, bytes] of imageResources) driver.setImageResource(uri, bytes);
   for (const [path, bytes] of cachedFiles) driver.setCachedFile(path, bytes);
   drivers.push(driver);
@@ -61,6 +63,10 @@ try {
     } else if (command.cmd === 'sessions') {
       sessions = command.sessions;
       driver.setSessions(structuredClone(sessions));
+      result = true;
+    } else if (command.cmd === 'group_members') {
+      groupMembers.set(command.session_id, structuredClone(command.members));
+      driver.setGroupMembers(command.session_id, structuredClone(command.members));
       result = true;
     } else if (command.cmd === 'employees') {
       employees = command.employees;
