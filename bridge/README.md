@@ -137,6 +137,14 @@ HTTPS_PROXY=http://127.0.0.1:7897 pnpm start
 
 Driver 优先非空 `HTTPS_PROXY`，其次非空 `HTTP_PROXY`，均未设置保持直连；不会自动读取 Windows 系统代理或 AstrBot 配置，也不在代理失败后尝试直连。Python 对文字语音使用 90 秒独立请求预算，排队或断线仍可能产生 unknown，只查原意图不重发。语音播放及卡片呈现需接收端手动验收，合成/编码通过不等于已播放。
 
+## 群历史与聊天记录卡片
+
+Python 的 `kairo_get_chat_history(limit=20)` 经 `get_recent_messages` 读取原消息所在群，limit范围1～100；桥接定位明确原生群会话，调用既有 `Driver.getRecentMessages`。返回按msgIdx升序的原生消息ID/索引、作者、摘要、时间、类型及撤回状态，不暴露raw或附件本机路径，不下载、标已读或重放入站事件；查询失败不会伪装为空历史。
+
+`kairo_send_chat_record(messages)` 经 `send/kind=chat_record` 调用既有 `Driver.sendChatRecord`。record为 `{sourceSessionId,msgArray:[{messageId,msgIdx}]}`，本能力要求来源等于目标；仅接收1～100条唯一ID的真实引用，不接受虚构正文、作者、其他目标、引用/@或按工号首次私聊。Driver重新读取来源后生成原生类型15卡片；索引不符、缺失或撤回拒绝，发送状态及持久防重不变，unknown只查询原意图。
+
+两工具仅当前真实Kairo群、普通成员也可用，沿用Python公共客户端名单与事件原群绑定。无需升级固定Driver或新增补丁；必须同时更新插件与桥接、构建并重启，在人格启用两个工具。真实卡片呈现和点击详情另行人工验收，不把离线原生IPC替身或sent当作接收端证明。
+
 ## 连接与发送记录
 
 - 每次连接和发送前核对实际登录 UID，账号不符时停止该连接的收发。语音还保留连接绑定的发送者 UID，在准备完成后及创建草稿前核对最新身份；准备或查人期间已观察到的换号返回 `failed`，不创建草稿、不提交消息。

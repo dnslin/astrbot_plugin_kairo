@@ -4,7 +4,7 @@ import WebSocket from 'ws';
 import type { IKK9Driver, KK9Message, SendOptions } from '@kairo/driver';
 import type { BridgeConfig } from './config.js';
 import { Attachments, type WireMessage } from './attachments.js';
-import { parseRequest, RequestError, serializeError, serializeResult, type BridgeRequest, type BridgeResult } from './protocol.js';
+import { parseRequest, RequestError, serializeError, serializeResult, type BridgeRequest, type BridgeResult, type HistoryMessage } from './protocol.js';
 
 type Log = (level: 'info' | 'warn' | 'error', message: string) => void;
 interface PendingEvent { message: KK9Message; prepared?: WireMessage; socket?: WebSocket }
@@ -222,6 +222,23 @@ export class Bridge {
       case 'get_send_status': return driver.getSendStatus(request.params.operation_id);
       case 'get_sessions': return { sessions: await driver.getSessions() };
       case 'get_group_members': return { members: await driver.getGroupMembers(request.params.session_id) };
+      case 'get_recent_messages': {
+        const session = (await driver.getSessions()).find((item) => item.id === request.params.session_id);
+        if (!session) throw new RequestError('SESSION_NOT_FOUND', `未找到原生会话 ${request.params.session_id}`);
+        if (session.type !== 'group') throw new RequestError('INVALID_SESSION_ID', '当前仅支持群会话历史');
+        const messages: HistoryMessage[] = (await driver.getRecentMessages(session, request.params.limit)).map((message) => ({
+          messageId: message.messageId ?? message.id,
+          msgIdx: message.msgIdx ?? null,
+          senderId: message.senderId ?? null,
+          sender: message.sender,
+          content: message.content,
+          timestamp: message.timestamp,
+          messageType: message.messageType ?? null,
+          isRecalled: message.isRecalled ?? false,
+        }));
+        messages.sort((a, b) => a.msgIdx === null ? b.msgIdx === null ? 0 : 1 : b.msgIdx === null ? -1 : a.msgIdx - b.msgIdx);
+        return { messages };
+      }
       case 'search_employees': return driver.searchEmployees(request.params.keyword);
       case 'get_user_profile': {
         const profile = await driver.getUserProfile(request.params.user_id);
@@ -265,6 +282,7 @@ export class Bridge {
           case 'app_card': return driver.sendAppMessage(params.card, options);
           case 'url_card': return driver.sendUrlCard(params.card, options);
           case 'biz_card': return driver.sendBizMessage(params.card, options);
+          case 'chat_record': return driver.sendChatRecord(params.record, options);
           case 'image': case 'file': case 'voice': {
             const file = await this.attachments.download(params.file_id, params.kind, params.name);
             // 下载期间可能切换账号，发送前再次核对。
