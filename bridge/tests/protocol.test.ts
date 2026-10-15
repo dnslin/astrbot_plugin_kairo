@@ -41,6 +41,28 @@ test('文本语音拒绝文件、音色、引用、提及及所有额外字段',
   }
 });
 
+test('按工号语音只接受准确工号、原文及稳定意图，不接受任何替代目标或附件字段', () => {
+  const directed = { type: 'request', id: 'directed-voice', action: 'send_voice_to_user', params: { operation_id: 'voice-intent', login_name: ' 00AbC ', text: '  读出正文\n保留原文  ' } };
+  assert.deepEqual(parseRequest(directed), { ...directed, params: { ...directed.params, login_name: '00AbC' } });
+  assert.doesNotThrow(() => parseRequest({ ...directed, params: { ...directed.params, text: '😀'.repeat(64_000) } }));
+  for (const text of [undefined, null, '', '  ', 123, true, {}, [], 'a'.repeat(128_001), '😀'.repeat(64_001)]) {
+    assert.throws(() => parseRequest({ ...directed, params: { ...directed.params, text } }), { code: 'INVALID_REQUEST' });
+  }
+  for (const key of ['operation_id', 'login_name']) {
+    for (const invalid of [undefined, null, '', '  ', 123, 'a'.repeat(257)]) {
+      assert.throws(() => parseRequest({ ...directed, params: { ...directed.params, [key]: invalid } }), { code: 'INVALID_REQUEST' });
+    }
+  }
+  for (const extra of [
+    { target_session_id: '77' }, { targetSessionId: '77' }, { targetLoginName: 'other' }, { user_id: '2' },
+    { target: '77' }, { target_user_id: '2' }, { at: [] }, { file: {} },
+    { kind: 'voice_text' }, { file_id: 'a'.repeat(32) }, { filePath: '/tmp/audio.wav' }, { name: 'audio.wav' },
+    { reply_to: '101' }, { replyTo: '101' }, { quote: '101' }, { mentions: [] }, { voice: 'zh-CN-XiaoxiaoNeural' }, { extra: true },
+  ]) {
+    assert.throws(() => parseRequest({ ...directed, params: { ...directed.params, ...extra } }), { code: 'INVALID_REQUEST' });
+  }
+});
+
 test('查询无须发送operation_id，工号trim但保留大小写', () => {
   assert.deepEqual(parseRequest({ type: 'request', id: 'q', action: 'get_sessions', params: {} }).params, {});
   assert.deepEqual(parseRequest({ type: 'request', id: 'q', action: 'get_user_profile', params: { user_id: '32' } }).params, { user_id: '32' });

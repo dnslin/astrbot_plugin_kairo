@@ -81,7 +81,7 @@ def _timestamp(event: KairoMessageEvent) -> float:
 
 @dataclass
 class _Pending:
-    body: str | dict
+    content: dict
     operation_id: str
     source_id: str
     source_timestamp: float
@@ -105,7 +105,7 @@ class KairoNotifications:
 
     async def _send(
         self, event: KairoMessageEvent, pending: _Pending, uid: str, login: str | None
-    ) -> str:
+    ) -> str | None:
         if error := _authorization_error(event):
             return error
         await event.adapter.get_client().check_inbound(event.message_obj)
@@ -124,19 +124,16 @@ class KairoNotifications:
         # Both notification tools share this event-level side-effect guard.
         # Claim before recipient profile lookup/side-effect await, including cancellation.
         event.set_extra(_SEND_KEY, pending.operation_id)
-        if isinstance(pending.body, str):
-            content = {"text": pending.body}
-        elif "kind" in pending.body:
-            content = {"media": pending.body}
-        else:
-            content = {"card": pending.body}
         result = await event.adapter.get_client().notify_employee_uid(
-            uid, login, **content, operation_id=pending.operation_id
+            uid, login, **pending.content, operation_id=pending.operation_id
         )
         if result.get("status") != "sent":
             prefix = f"[{result['code']}] " if result.get("code") is not None else ""
             return prefix + _outcome_error(result)
         event._has_send_oper = True
+        if "voice_text" in pending.content:
+            # Match current-session voice: None ends the host's default Agent loop.
+            return None
         return (
             "原生已确认发送（sent），不代表送达或已读。"
             f"operationId={result.get('operationId') or pending.operation_id}，"
@@ -144,17 +141,26 @@ class KairoNotifications:
             f"sessionId={result.get('sessionId') or '未返回'}"
         )
 
-    async def _notify(self, event: KairoMessageEvent, name: str, args: dict, attempt: dict) -> str:
+    async def _notify(
+        self, event: KairoMessageEvent, name: str, args: dict, attempt: dict
+    ) -> str | None:
         scope = self._scope(event)
         previous = self._latest.get(scope)
         if previous is not None and previous[0] > event.received_at_ns:
             return "该通知消息早于当前通知意图，旧查询不会替换或发送。"
         self._latest[scope] = (event.received_at_ns, attempt["operation_id"])
         is_media = name in {"kairo_send_image", "kairo_send_file"}
+        if name == "kairo_notify_employee":
+            content = {"text": args["text"]}
+        elif name == "kairo_send_voice":
+            content = {"voice_text": args["text"]}
+        elif is_media:
+            # Reserve the generation before awaiting the attachment snapshot.
+            content = {}
+        else:
+            content = {"card": _card_data(name, args)}
         pending = _Pending(
-            body=args["text"]
-            if name == "kairo_notify_employee"
-            else (dict(args) if is_media else _card_data(name, args)),
+            content=content,
             operation_id=attempt["operation_id"],
             source_id=event.message_obj.message_id,
             source_timestamp=_timestamp(event),
@@ -164,7 +170,7 @@ class KairoNotifications:
         self._pending[scope] = pending
         try:
             if is_media:
-                pending.body = await _media_data(event, name, args)
+                pending.content = {"media": await _media_data(event, name, args)}
                 if self._pending.get(scope) is not pending:
                     return "该通知已被同一管理员的新通知替换，旧附件不会发送。"
             result = await event.adapter.get_client().search_employees(args["name"])
@@ -197,7 +203,7 @@ class KairoNotifications:
         pending.ready_at_ns = perf_counter_ns()
         return "\n".join(lines)
 
-    async def _select(self, event: KairoMessageEvent, args: dict, attempt: dict) -> str:
+    async def _select(self, event: KairoMessageEvent, args: dict, attempt: dict) -> str | None:
         scope = self._scope(event)
         pending = self._pending.get(scope)
         if pending is None or pending.candidates is None:
@@ -220,7 +226,9 @@ class KairoNotifications:
         del self._pending[scope]
         return await self._send(event, pending, uid, login)
 
-    async def _execute(self, event: KairoMessageEvent, name: str, args: dict, attempt: dict) -> str:
+    async def _execute(
+        self, event: KairoMessageEvent, name: str, args: dict, attempt: dict
+    ) -> str | None:
         if error := _authorization_error(event):
             return error
         try:
@@ -307,7 +315,7 @@ class KairoNotifyEmployeeTool(FunctionTool[AstrAgentContext]):
         )
         self._manager = manager
 
-    async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str:
+    async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str | None:
         return await self._manager._call(self, context, kwargs)
 
 
@@ -318,7 +326,7 @@ class KairoSelectEmployeeTool(FunctionTool[AstrAgentContext]):
             description=(
                 "仅管理员已看到员工候选列表后，在下一条真实用户消息明确回复数字编号时调用。"
                 "choice 必须对应当前原生消息的明确数字选择，不能由模型推断或替用户决定。"
-                "按保存的候选 UID 和原始通知文本或卡片发送，不能修改内容、工号、会话或用户。"
+                "按保存的候选 UID 和原始通知文本、语音正文、卡片或附件发送，不能修改内容、工号、会话或用户。"
                 "发送前复查真实 UID、准确工号和员工名单；失败或未知结果不得重发。"
             ),
             parameters={
@@ -330,5 +338,5 @@ class KairoSelectEmployeeTool(FunctionTool[AstrAgentContext]):
         )
         self._manager = manager
 
-    async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str:
+    async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str | None:
         return await self._manager._call(self, context, kwargs)

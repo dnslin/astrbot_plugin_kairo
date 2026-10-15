@@ -606,6 +606,71 @@ test('文本语音无附件 HTTP 依赖，原生结果及既有发送记录防�
   }
 });
 
+test('按工号语音复用当前 Driver，无 HTTP 附件或预发文本，保留结果且 unknown 只查不重发', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'kairo-directed-voice-'));
+  let httpRequests = 0, creations = 0;
+  const http = createServer((_request, response) => { httpRequests++; response.writeHead(404).end(); });
+  const server = new WebSocketServer({ server: http });
+  await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve));
+  const address = http.address(); assert.ok(address && typeof address !== 'string');
+  const config = parseConfig({ serverUrl: `http://127.0.0.1:${address.port}`, token: 'x'.repeat(32), expectedUserId: '1', reconnectDelayMs: 100 }, root);
+  const driver = new FakeKK9Driver(); driver.setCurrentUserId('1');
+  driver.setEmployees([{ id: '2', name: 'Recipient', loginName: '00AbC' }]);
+  const responses = new Map<string, any>();
+  let peer: WebSocket | undefined, ready = false, sequence = 0;
+  server.on('connection', socket => {
+    peer = socket;
+    socket.on('message', raw => {
+      const value = JSON.parse(raw.toString());
+      if (value.type === 'hello') { assert.equal(value.version, 2); socket.send(JSON.stringify({ type: 'ready', version: 2 })); }
+      else if (value.type === 'response') responses.set(value.id, value);
+    });
+  });
+  const bridge = new Bridge(config, () => { creations++; return driver; }, (_level, text) => { if (text.startsWith('AstrBot 桥接已连接')) ready = true; });
+  const running = bridge.run();
+  const rpc = async (action: string, params: Record<string, unknown>) => {
+    const id = `directed-voice-${++sequence}`; peer!.send(JSON.stringify({ type: 'request', id, action, params }));
+    await until(() => responses.has(id)); return responses.get(id);
+  };
+  try {
+    await until(() => ready);
+    for (const outcome of [
+      { status: 'sent', messageId: '901', sessionId: '77', receipt: { draftId: '-31', sessionId: '77', code: 0, messageId: '901', msgIdx: 5 }, isPreTrigger: false },
+      { status: 'failed', error: '语音准备失败', isPreTrigger: true, nativeCode: 617 },
+      { status: 'unknown', error: '回执超时', isPreTrigger: false },
+    ] satisfies SendOutcome[]) {
+      driver.setSendBehavior({ mode: 'custom', handler: () => outcome });
+      const params = { operation_id: `directed-${outcome.status}`, login_name: ' 00AbC ', text: '  读出正文\n保留原文  ' };
+      const before = driver.recordedCalls.length;
+      const response = await rpc('send_voice_to_user', params); assert.equal(response.ok, true);
+      assert.deepEqual(response.result, { ...outcome, operationId: params.operation_id });
+      const call = driver.recordedCalls.at(-1)!;
+      assert.equal(call.type, 'voice'); assert.deepEqual(call.payload, { text: params.text });
+      assert.deepEqual(call.options, { targetLoginName: '00AbC', operationId: params.operation_id });
+      assert.equal(call.targetLoginName, '00AbC'); assert.equal(driver.recordedCalls.length, before + 1);
+      driver.setSendBehavior({ mode: 'success' });
+      assert.deepEqual((await rpc('send_voice_to_user', params)).result, response.result);
+      assert.deepEqual((await rpc('get_send_status', { operation_id: params.operation_id })).result, response.result);
+      const changed = await rpc('send_voice_to_user', { ...params, text: '不同正文' });
+      assert.equal(changed.ok, false); assert.equal(changed.error.code, 'SEND_ERROR');
+      assert.equal(driver.recordedCalls.length, before + 1);
+    }
+    assert.equal(httpRequests, 0); assert.equal(creations, 1);
+    const before = driver.recordedCalls.length;
+    driver.setCurrentUserId('switched-account');
+    const closed = new Promise<void>(resolve => peer!.once('close', () => resolve()));
+    peer!.send(JSON.stringify({ type: 'request', id: 'voice-wrong-account', action: 'send_voice_to_user', params: { operation_id: 'voice-wrong-account', login_name: '00AbC', text: '不能发送' } }));
+    await closed;
+    assert.equal(driver.recordedCalls.length, before);
+  } finally {
+    bridge.stop(); await running;
+    for (const socket of server.clients) socket.terminate();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await new Promise<void>(resolve => http.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('员工搜索通过真实 JSON WebSocket 完整返回候选，不回退身份、不发送且保留原生错误', async () => {
   const root = await mkdtemp(join(tmpdir(), 'kairo-employee-search-'));
   const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });

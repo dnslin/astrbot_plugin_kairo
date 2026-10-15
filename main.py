@@ -29,7 +29,7 @@ class KairoPlugin(Star):
 
         notifications = KairoNotifications()
         tools = (
-            KairoSendVoiceTool(),
+            KairoSendVoiceTool(notifications),
             KairoSendAppCardTool(notifications),
             KairoSendUrlCardTool(notifications),
             KairoSendBizCardTool(notifications),

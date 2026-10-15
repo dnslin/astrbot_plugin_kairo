@@ -49,6 +49,7 @@ Python 完成事件提交或名单拒绝后返回 `{"type":"ack","event_id":"...
 | --- | --- | --- |
 | `send` | `operation_id`, `target_session_id` 和下表消息字段 | 原生发送结果 |
 | `send_to_user` | `operation_id`, `login_name`, `text` | 首次或已有私聊文本结果；成功包含正式 `sessionId` |
+| `send_voice_to_user` | `operation_id`, `login_name`, `text` | 合成语音的首次或已有私聊结果；成功包含正式 `sessionId` |
 | `send_card_to_user` | `operation_id`, `login_name`, `kind`, `card` | 三类卡片的首次或已有私聊结果；成功包含正式 `sessionId` |
 | `send_media_to_user` | `operation_id`, `login_name`, `kind`, `file_id`；可选 `name` | 图片/文件首次或已有私聊结果；成功包含正式 `sessionId` |
 | `get_send_status` | `operation_id` | 原意图状态，不触发发送 |
@@ -62,6 +63,10 @@ Python 完成事件提交或名单拒绝后返回 `{"type":"ack","event_id":"...
 `get_group_members` 使用原生群会话ID，不是群接收对象ID或宿主上下文。Driver默认整轮期限30秒，Python单次等待35秒，不改变全局时限。成员按UID去重，工号、姓名、岗位及全部可见部门路径缺失时保留null；不截断到200人，不保证服务器此刻最新。空群正常返回空列表；非群、未知会话、档案错误或超时返回原生错误，不返回部分成员，也不写入发送意图数据库。
 
 `send_card_to_user` 的 `kind` 只允许 `app_card`、`url_card`、`biz_card`，`card` 沿用下表字段与完整校验。桥接调用对应 Driver 卡片方法，传入准确 `targetLoginName` 和 `operationId`；不接受会话覆盖、引用或提及，不依赖会话列表，不预发文本。首次发送使用 Driver 已有的准确工号原生上下文，由本次业务回执确认正式私聊会话。
+
+`send_voice_to_user` 只接受 `operation_id/login_name/text`，正文非空且最长 128000 UTF-16 单位；不接收会话覆盖、音色、附件、路径、引用或提及。Python 等待 90 秒，沿用当前 Driver 的 Edge 合成、KK9 编码及语音原生提交，调用 `sendVoice({text}, {targetLoginName, operationId})`。首次私聊由本次语音回执确认正式会话，不预发文字，不切窗口，不创建第二个 Driver/CDP 连接。
+
+语音发送将 Driver 连接时绑定的发送者 UID 保留至原生提交，在合成/编码后及创建草稿前核对实际账号。已观察到的账号变化返回 `failed/isPreTrigger:true`，不创建草稿或提交；绑定 UID 是 Driver 内部信息，不增加协议参数。该核对不是 KK9 提供的原子事务，不承诺覆盖最后一次身份查询与原生调用之间不可观测的变化。
 
 `send_media_to_user` 的 `kind` 只允许 `image` 或 `file`，`file_id` 为 32 位小写十六进制缓存标识，`name` 为可选非空文件名。只通过鉴权 `/files/{file_id}` 下载，不接收本地路径、URL、会话覆盖、引用或提及。下载后再次核对账号，分别调用 Driver `sendImage` / `sendFile`，只传准确 `targetLoginName` 与 `operationId`。首次私聊由本次附件发送确认正式会话，不预发文本。
 
@@ -97,15 +102,17 @@ Python 完成事件提交或名单拒绝后返回 `{"type":"ack","event_id":"...
 
 SQLite 在触发发送前声明意图。同一 ID 的目标、工号、内容、类型、引用或提及不同会冲突；相同意图重复调用不会再次触发，前置失败也不重新提交。发送记录保留正式会话和原生回执，迟到 `unknown` 不覆盖 `sent/failed`。
 
-Python 请求超时或断线后不重新发送，只查询一次原 `operation_id`。仍未知则保留操作 ID 和原因；`notify_employee`、`send_voice_text`、`send_card`、`send_media` 返回结果供调用方处理，`send_chain` 抛出含 `result` 的 `BridgeError`。六类按需发送工具在提交前保存操作 ID，等待取消后仍能核查原意图。协议不保证进程重启后的入站补偿或端到端恰好一次处理。
+Python 请求超时或断线后不重新发送，只查询一次原 `operation_id`。仍未知则保留操作 ID 和原因；`notify_employee`、`notify_employee_voice`、`send_voice_text`、`send_card`、`send_media` 返回结果供调用方处理，`send_chain` 抛出含 `result` 的 `BridgeError`。六类按需发送工具在提交前保存操作 ID，等待取消后仍能核查原意图。协议不保证进程重启后的入站补偿或端到端恰好一次处理。
 
 员工和群黑白名单由 Python 公共客户端统一执行；Bridge RPC 是内部传输，不是另一个面向插件的无名单发送 API。管理员指令、事件回复和主动发送都经过该客户端。
 
-模型工具必须使用真实 `KairoMessageEvent`。语音工具及未传 `name` 的卡片/图片/文件工具使用事件原始会话与发送者；卡片/图片/文件传 `name` 时，仅真实管理员能按姓名跨会话推送。`kairo_notify_employee(name,text)`、`kairo_select_employee(choice)` 也仅向真实管理员开放，不接受平台、UID、工号、会话参数。非 Kairo 请求移除本插件全部工具，非管理员 Kairo 请求额外移除通知/选择工具；卡片和附件保留当前会话能力，执行时拒绝非管理员传 `name`，图片/文件另拒绝非管理员传宿主 `path`。不修改全局启停或补回人格移除的工具。同一发送工具在同一事件中不能通过增删 `name` 再次尝试另一目标；每事件的一次尝试不替代 Driver 的持久发送记录。
+模型工具必须使用真实 `KairoMessageEvent`。语音、卡片、图片和文件工具未传 `name` 时使用事件原始会话与发送者；传 `name` 时，仅真实管理员能按姓名跨会话推送。`kairo_notify_employee(name,text)`、`kairo_select_employee(choice)` 也仅向真实管理员开放，不接受平台、UID、工号、会话参数。非 Kairo 请求移除本插件全部工具，非管理员 Kairo 请求额外移除通知/选择工具；语音、卡片和附件保留当前会话能力，执行时拒绝非管理员传 `name`，图片/文件另拒绝非管理员传宿主 `path`。不修改全局启停或补回人格移除的工具。同一发送工具在同一事件中不能通过增删 `name` 再次尝试另一目标；每事件的一次尝试不替代 Driver 的持久发送记录。
 
 `kairo_get_group_members` 是无参数只读工具，仅真实Kairo群事件可用；私聊和其他平台在请求筛选时移除，执行入口也拒绝。工具从事件保存的原生 `target_session_id` 取得群会话，宿主上下文或群显示字段改写不改变读取目标。普通成员可用，沿用群及发起人名单，等待全员资料后重新检查当前规则；不筛除名单中的个别成员来伪称全员。返回 `{session_id,total,members}` 的JSON工具结果，不设置发送完成标志，不接入发送重试或操作ID。
 
-文本、卡片和附件姓名通知共用候选状态，仅在一个完整搜索候选且姓名完全一致时自动发送。其余结果按序号展示真实身份和部门；下一条原生用户消息的明确数字选择必须与 `choice` 一致，不能由模型代选。候选及原始正文、完整卡片或附件快照按平台实例、原生会话和发起人隔离，并绑定 UID/工号快照；同范围新通知替换旧意图，选择后消耗，重载后清空。发送前通过 `get_user_profile` 重查 UID 和真实工号，再走共用名单的 `send_to_user`、`send_card_to_user` 或 `send_media_to_user`；缺失、变化或拒绝均不改投，不重新提交未知意图。附件在展示候选前保存字节，不重新读取源路径或选择消息的附件。原生事件高精度接收顺序拒绝同消息及候选产生前的选择，避免 Windows 宿主墙钟时间相同造成误拒绝。
+文本、语音、卡片和附件姓名通知共用候选状态，仅在一个完整搜索候选且姓名完全一致时自动发送。其余结果按序号展示真实身份和部门；下一条原生用户消息的明确数字选择必须与 `choice` 一致，不能由模型代选。候选及原始正文、完整卡片或附件快照按平台实例、原生会话和发起人隔离，并绑定 UID/工号快照；语音保存原始朗读文本，选择消息不能修改。同期同范围新通知替换旧意图，选择后消耗，重载后清空。发送前通过 `get_user_profile` 重查 UID 和真实工号，再走共用名单的 `send_to_user`、`send_voice_to_user`、`send_card_to_user` 或 `send_media_to_user`；缺失、变化或拒绝均不改投，不重新提交未知意图。附件在展示候选前保存字节，不重新读取源路径或选择消息的附件。原生事件高精度接收顺序拒绝同消息及候选产生前的选择，避免 Windows 宿主墙钟时间相同造成误拒绝。
+
+语音通知在唯一姓名直接发送或编号选择完成后，仅当原生结果为 `sent` 才返回 `None` 结束默认主聊天 Agent，避免向来源群补发确认文字；候选、失败及 `unknown` 仍返回说明，未知结果保留原操作 ID 且不重发。其他姓名通知类型的既有成功回执行为不变。
 
 `get_user_profile` 返回的 `profile.id` 由桥接统一为字符串，与 `search_employees` 候选 UID 使用相同格式；Driver 的原始数字 UID 不应被误判为身份缺失。`raw` 保留原始字段，`loginName` 仍只取真实 `raw.login_name`，不以 UID 代替工号。
 
@@ -120,4 +127,4 @@ Python 请求超时或断线后不重新发送，只查询一次原 `operation_i
 
 入站图片的独立原图判定与 URI 选择共用 Driver 的 `hasOriginalImageSource/getOriginalImageUri`；原图字段显式为空也不回退缩略图。所有图片都经当前 Driver 的 `downloadImage(image, localTarget)` 保存到桥接本机：Driver 优先读取 KK9 机器上的准确原图缓存，缓存不存在时才原生下载准确原图；仅有准确原图路径、没有 URI 也可保存。普通文件经 `saveFile(fileInfo, localTarget)` 保存已有 KK9 缓存，未缓存时仍不自动下载。图片按准确原图 URI 或缓存路径、文件按 KK9 缓存路径构造各自缓存键；每次保存使用独立随机 `.part` 文件，完整传输并检查大小后重命名发布，失败半文件不参与缓存命中。相同来源复用本地完整缓存并刷新保留期，上传失败不触发再次传输；失败逐项保留 `attachment_error` 和正文，不上传缩略图。`normalize(message, driver)` 必须传入具有 `downloadImage` 和 `saveFile` 的当前 Driver。此切换不改变 WS/HTTP 协议，不新增 Windows 文件服务；语音发送不等于完整语音接收。
 
-当前配套 Driver 固定到 main 提交 [`db186e05a7df6b94de041a9e8f9f8787e1d9d3a6`](https://github.com/dnslin/kairo-driver/commit/db186e05a7df6b94de041a9e8f9f8787e1d9d3a6)，原生支持准确工号卡片及图片/文件发送，保留 Edge TTS 1.2.11 修复；不再需要插件的 Driver 发送补丁。包版本仍为 2.0.1，不能用版本号代替提交身份。依赖切换不改变协议 v2 或 `voice_text` 调用方式，两份音频依赖补丁继续保留。发送侧 `sendImage`、`sendFile`、`sendVoice({filePath})` 仍接收桥接所在机器的文件路径，Windows 传输及临时文件由 Driver 管理；既有原生目标、发送防重与 unknown 不重发语义不变。`cdp.url` 接受可达的 HTTP/HTTPS 发现基址及路径前缀，不含凭据、查询、片段或末尾 `/json`；发现返回的 WebSocket 地址必须从桥接机器可达，Driver 不自动改写。
+当前配套 Driver 固定到 main 提交 [`8507d4eb8ac458b197e34a52a60e87de6ff0a2be`](https://github.com/dnslin/kairo-driver/commit/8507d4eb8ac458b197e34a52a60e87de6ff0a2be)，原生包含准确工号卡片、图片/文件及语音、连接发送者绑定和对应 Fake 行为；插件不再配置 Driver 自身补丁。包版本仍为 2.0.1，不能用版本号代替提交身份；原始 vendor checkout 不修改。协议保持 v2，当前会话 `voice_text` 调用方式不变，WAV 和 Edge SDK 两份第三方补丁继续保留。发送侧 `sendImage`、`sendFile`、`sendVoice({filePath})` 接收桥接所在机器的文件路径，Windows 传输及临时文件由 Driver 管理；原生目标、防重和 unknown 不重发规则不变。`cdp.url` 接受可达的 HTTP/HTTPS 发现基址及路径前缀，不含凭据、查询、片段或末尾 `/json`；发现返回的 WebSocket 地址必须从桥接机器可达，Driver 不自动改写。

@@ -233,6 +233,7 @@ export class Bridge {
         return { profile: { ...profile, id: String(profile.id), loginName: loginName.trim() } };
       }
       case 'send_to_user': return driver.sendTextToUser(request.params.login_name, request.params.text, { operationId: request.params.operation_id });
+      case 'send_voice_to_user': return driver.sendVoice({ text: request.params.text }, { targetLoginName: request.params.login_name, operationId: request.params.operation_id });
       case 'send_card_to_user': {
         const params = request.params;
         const options: SendOptions = { targetLoginName: params.login_name, operationId: params.operation_id };

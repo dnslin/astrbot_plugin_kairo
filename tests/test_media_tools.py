@@ -5,7 +5,11 @@ import asyncio
 import pytest
 from astrbot.api.message_components import File, Image
 from astrbot_plugin_kairo import tools as kairo_tools
-from astrbot_plugin_kairo.notifications import KairoNotifications, KairoSelectEmployeeTool
+from astrbot_plugin_kairo.notifications import (
+    KairoNotifications,
+    KairoNotifyEmployeeTool,
+    KairoSelectEmployeeTool,
+)
 from astrbot_plugin_kairo.transport import BridgeServer
 from test_notifications import NativeBoundary, employee, make_event, wrap
 
@@ -88,8 +92,13 @@ async def test_media_choice_uses_source_snapshot_not_changed_file_or_choice_atta
     tool, choose = tool_for(class_name, manager), KairoSelectEmployeeTool(manager)
     source = tmp_path / "source.bin"
     source.write_bytes(b"original snapshot")
-    listing = await tool.call(wrap(attach(make_event(boundary), source, component)), name="张三")
+    source_event = attach(make_event(boundary), source, component)
+    listing = await tool.call(wrap(source_event), name="张三")
     assert "尚未发送" in listing and boundary.sends == []
+    pending = manager._pending[manager._scope(source_event)]
+    media = pending.content["media"]
+    assert set(pending.content) == {"media"} and media["kind"] == kind
+    assert boundary.files.get_file_path(media["file_id"]).read_bytes() == b"original snapshot"
     source.write_bytes(b"changed after listing")
     replacement = tmp_path / "choice.bin"
     replacement.write_bytes(b"not the selected source")
@@ -98,6 +107,7 @@ async def test_media_choice_uses_source_snapshot_not_changed_file_or_choice_atta
     assert "sent" in result
     assert boundary.payloads == [b"original snapshot"]
     assert boundary.sends[0]["login_name"] == "EmployeeB"
+    assert boundary.sends[0]["operation_id"] == pending.operation_id
 
 
 @pytest.mark.parametrize("class_name,kind,component", MEDIA_CASES)
@@ -225,3 +235,48 @@ async def test_attachment_index_counts_only_requested_media_type(
     result = await tool_for(class_name).call(wrap(event), name="张三", attachment_index=2)
     assert "sent" in result
     assert boundary.payloads == [b"selected second attachment"]
+
+
+@pytest.mark.parametrize("class_name,kind,component", MEDIA_CASES)
+@pytest.mark.parametrize("newer_exact", [False, True])
+async def test_slow_media_snapshot_cannot_resurrect_superseded_notification(
+    tmp_path, class_name, kind, component, newer_exact
+):
+    candidates = [employee()]
+    if not newer_exact:
+        candidates.append(employee("uid-b", "张三", "EmployeeB"))
+    boundary = MediaBoundary(tmp_path, candidates)
+    manager = KairoNotifications()
+    snapshot_started, snapshot_release = asyncio.Event(), asyncio.Event()
+    original_add_file = boundary.add_file
+
+    async def delayed_add_file(path, name=None):
+        descriptor = await original_add_file(path, name)
+        snapshot_started.set()
+        await snapshot_release.wait()
+        return descriptor
+
+    boundary.add_file = delayed_add_file
+    source = tmp_path / "old.bin"
+    source.write_bytes(b"old attachment snapshot")
+    old = asyncio.create_task(
+        tool_for(class_name, manager).call(
+            wrap(attach(make_event(boundary), source, component)), name="旧名"
+        )
+    )
+    await asyncio.wait_for(snapshot_started.wait(), 5)
+    newer = make_event(boundary, message_id="newer-text")
+    await KairoNotifyEmployeeTool(manager).call(wrap(newer), name="张三", text="新正文")
+    snapshot_release.set()
+    assert "替换" in await old
+    if not newer_exact:
+        await KairoSelectEmployeeTool(manager).call(
+            wrap(make_event(boundary, "2", message_id="choice")), choice=2
+        )
+    assert [call[1]["keyword"] for call in boundary.calls if call[0] == "search_employees"] == [
+        "张三"
+    ]
+    assert [(send["login_name"], send["text"]) for send in boundary.sends] == [
+        ("EmployeeA" if newer_exact else "EmployeeB", "新正文")
+    ]
+    assert boundary.payloads == []

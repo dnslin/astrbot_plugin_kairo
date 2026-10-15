@@ -1029,3 +1029,87 @@ async def test_group_members_unknown_native_session_preserves_error_not_empty_li
     assert "793803" in result
     assert await command("calls") == []
     assert not event._has_send_oper
+
+
+@pytest.mark.parametrize("first_contact", [False, True])
+@pytest.mark.parametrize("ambiguous", [False, True])
+async def test_directed_text_voice_crosses_real_bridge_without_posting_to_source_group(
+    connection, kairo_tools, first_contact, ambiguous
+):
+    adapter, command, _, _ = connection
+    registered, wrap = kairo_tools
+    uid, login, name = ("44", "E044", "未联系员工") if first_contact else ("43", "E043", "员工乙")
+    selected = {"id": uid, "name": name, "loginName": login, "departmentPaths": ["公司 / 财务"]}
+    candidates = (
+        [
+            {"id": "42", "name": name, "loginName": "E042", "departmentPaths": ["公司 / 研发"]},
+            selected,
+        ]
+        if ambiguous
+        else [selected]
+    )
+    await command("search_employees", employees=candidates)
+    await command("emit", message=incoming("voice-name-request", content=f"给{name}私聊发语音"))
+    event = await receive(adapter)
+    body = "  原始语音正文\n保留空格  "
+    voice, choose = registered["kairo_send_voice"], registered["kairo_select_employee"]
+    result = await voice.call(wrap(event), name=name, text=body)
+    if ambiguous:
+        assert login in result and "E042" in result
+        assert await command("calls") == []
+        assert "错误" in await choose.call(wrap(event), choice=2)
+        await command("search_employees", employees=list(reversed(candidates)))
+        await command("emit", message=incoming("voice-name-choice", content="选第2个"))
+        selection = await receive(adapter)
+        result = await choose.call(wrap(selection), choice=2)
+        assert await choose.call(wrap(selection), choice=2) == result
+    else:
+        assert await voice.call(wrap(event), name=name, text="不得改变正文") == result
+    assert result is None
+    calls = await command("calls")
+    assert len(calls) == 1
+    assert calls[0]["type"] == "voice" and calls[0]["payload"] == {"text": body}
+    assert calls[0]["options"]["targetLoginName"] == login
+    assert "targetSessionId" not in calls[0]["options"]
+    operation_id = calls[0]["options"]["operationId"]
+    receipt = await adapter.get_client().get_send_status(operation_id)
+    assert receipt["status"] == "sent" and receipt["operationId"] == operation_id
+    assert receipt["messageId"]
+    private = next(
+        item for item in await adapter.get_client().get_sessions() if item["receiverId"] == uid
+    )
+    assert private["type"] == "private" and private["id"] != event.target_session_id
+    assert receipt["sessionId"] == private["id"]
+    assert len(await command("calls")) == 1
+
+
+async def test_directed_text_voice_unknown_reconciles_without_duplicate_native_send(
+    connection, kairo_tools
+):
+    adapter, command, _, _ = connection
+    registered, wrap = kairo_tools
+    await command(
+        "search_employees",
+        employees=[
+            {"id": "44", "name": "未联系员工", "loginName": "E044", "departmentPaths": None}
+        ],
+    )
+    await command("behavior", behavior={"mode": "post_trigger_timeout"})
+    await command("emit", message=incoming("voice-unknown-request", content="给未联系员工发语音"))
+    event = await receive(adapter)
+    voice = registered["kairo_send_voice"]
+    first, duplicate = await asyncio.gather(
+        voice.call(wrap(event), name="未联系员工", text="可能已经发送"),
+        voice.call(wrap(event), name="未联系员工", text="可能已经发送"),
+    )
+    assert first == duplicate and "unknown" in first
+    assert await voice.call(wrap(event), name="未联系员工", text="不应重发") == first
+    calls = await command("calls")
+    assert len(calls) == 1
+    assert calls[0]["type"] == "voice"
+    assert calls[0]["payload"] == {"text": "可能已经发送"}
+    operation_id = calls[0]["options"]["operationId"]
+    assert operation_id in first
+    result = await adapter.get_client().get_send_status(operation_id)
+    assert result["status"] == "unknown" and result["operationId"] == operation_id
+    assert len(await command("calls")) == 1

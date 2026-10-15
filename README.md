@@ -4,7 +4,7 @@
 
 根目录是 AstrBot 平台插件，`bridge/` 是运行在 Linux 或 Windows 上的 Node.js 桥接程序。桥接主动连接 AstrBot，并通过本机或远程 CDP（客户端调试接口）访问仍运行在 Windows 上的 KK9；不要求桥接与 KK9 同机，也不需要共享磁盘或另建 Windows 文件服务。
 
-**当前源码支持 Linux 桥接连接远程 Windows KK9、跨机器附件，以及仅管理员可用的按姓名通知。** 本轮桥接构建及 44 项 Node、286 项 Python 检查通过；姓名通知已通过真实 WS/SQLite 的替身联调，真实模型选择与接收端呈现仍需人工验收。历史 Windows → Windows 真实附件验证不替代 Linux 真机验收。KK9 不支持流式输出，本插件等完整回复生成后发送。
+**当前源码支持 Linux 桥接连接远程 Windows KK9、跨机器附件，以及仅管理员可用的按姓名通知。** 本轮桥接构建及 110 项 Node、409 项 Python 检查通过；按姓名语音私聊已通过真实 AstrBot/WS/SQLite 的替身联调，真实模型选择与接收端播放仍需人工验收。历史 Windows → Windows 真实附件验证不替代 Linux 真机验收。KK9 不支持流式输出，本插件等完整回复生成后发送。
 
 ## 能力范围
 
@@ -18,8 +18,8 @@
 | 按需文字转语音 | 专用模型工具调用桥接端 Driver 合成并发送；不依赖 AstrBot TTS 或 FFmpeg |
 | 图片、文件接收 | 图片由 Driver 读取 KK9 准确原图缓存或原生下载；普通文件由 Driver 传输 KK9 已有缓存 |
 | 私聊、群聊卡片回复 | 原生应用、链接、业务卡片；普通文字可选择自动转应用卡片 |
-| 员工首次私聊通知 | 文本、三类卡片、图片和文件；不要求已有会话，管理员命令仍只发文本 |
-| 按姓名私聊通知 | 仅当前 Kairo 管理员；文本、卡片和附件共用查人、重名列表及下一条消息选择，发送前复查 UID 与真实工号 |
+| 员工首次私聊通知 | 文本、三类卡片、图片、文件和文字合成语音；不要求已有会话，管理员命令仍只发文本 |
+| 按姓名私聊通知 | 仅当前 Kairo 管理员；文本、语音、卡片和附件共用查人、重名列表及下一条消息选择，发送前复查 UID 与真实工号 |
 | 已有会话主动发送 | 统一客户端发送文字、媒体和卡片 |
 | 群内员工上下文隔离 | 默认开启；关闭后整群共享上下文 |
 | 连接恢复 | WebSocket 重连、未确认事件重放、失效 Driver 重建；不自动补发未知结果 |
@@ -73,7 +73,7 @@ Docker 部署在原有 AstrBot 服务中追加 `6190:6190` 端口映射。桥接
 
 ### Linux 或 Windows：安装桥接
 
-在桥接机器安装 Node.js 24（最低 22.13）、Git、pnpm 11.19.0。当前固定上游 [main 提交 `db186e05a7df6b94de041a9e8f9f8787e1d9d3a6`](https://github.com/dnslin/kairo-driver/commit/db186e05a7df6b94de041a9e8f9f8787e1d9d3a6)，原生包含三类卡片、图片及文件的准确工号定向发送，并保留 Edge TTS 新端点及资源清理、完整人员搜索、远程 CDP 与跨机器附件传输。上游包版本仍为 2.0.1，不能仅靠版本号区分源码；准备脚本从固定源码生成归档包，不需要本插件再给 Driver 打发送补丁，不依赖本机开发链接。两份音频依赖补丁仍保留。
+在桥接机器安装 Node.js 24（最低 22.13）、Git、pnpm 11.19.0。当前固定上游 [main 提交 `8507d4eb8ac458b197e34a52a60e87de6ff0a2be`](https://github.com/dnslin/kairo-driver/commit/8507d4eb8ac458b197e34a52a60e87de6ff0a2be)，原生包含三类卡片、图片、文件及语音的准确工号定向发送，以及语音准备后和草稿前的连接发送者核对；保留 Edge TTS 资源清理、完整人员搜索、远程 CDP 与跨机器附件传输。上游包版本仍为 2.0.1，源码身份以提交为准；准备脚本从固定源码生成归档包，插件不再维护 Driver 自身补丁，不修改原始 checkout，不依赖本机开发链接。两份第三方音频依赖补丁仍保留。
 
 Linux 执行：
 
@@ -170,7 +170,7 @@ elif result["status"] == "unknown":
     result = await client.get_send_status(result["operationId"])  # 只查询，不重发
 ```
 
-每个 `operation_id` 代表一个固定发送意图，不能给另一条消息复用。`notify_employee`、`send_voice_text` 和单卡片 `send_card` 返回 `sent/failed/unknown` 结果；名单拒绝、桥接不可用等调用错误会抛出 `BridgeError`。`send_chain` 成功返回 `None`，发送失败/未知会抛出带 `result` 的 `BridgeError`。通过 `await client.get_sessions()` 获取原生会话 ID 及会话类型，用于主动发送和配置群名单。
+每个 `operation_id` 代表一个固定发送意图，不能给另一条消息复用。`notify_employee`、`notify_employee_voice`、`send_voice_text` 和单卡片 `send_card` 返回 `sent/failed/unknown` 结果；名单拒绝、桥接不可用等调用错误会抛出 `BridgeError`。`send_chain` 成功返回 `None`，发送失败/未知会抛出带 `result` 的 `BridgeError`。通过 `await client.get_sessions()` 获取原生会话 ID 及会话类型，用于主动发送和配置群名单。
 
 ## 4. 卡片和媒体
 
@@ -207,24 +207,24 @@ await event.send(MessageChain([Json({
 
 ### 按需语音、卡片与附件（方案 B）
 
-插件注册以下六个发送工具。需要支持工具调用的聊天模型，且当前人格允许使用对应工具；插件不会补回已停用的工具。工具须从真实 Kairo 私聊或群聊调用。语音只发当前会话；卡片、图片和文件不传 `name` 时发当前会话，管理员传员工姓名 `name` 时推送到该员工私聊，包括从未联系过的员工。模型不能指定平台实例、会话 ID、工号或 UID。图片、文件工具允许管理员指定已存在的宿主本地路径，普通用户只能转发当前消息的附件。
+插件注册以下六个发送工具。需要支持工具调用的聊天模型，且当前人格允许使用对应工具；插件不会补回已停用的工具。工具须从真实 Kairo 私聊或群聊调用。语音、卡片、图片和文件不传 `name` 时发当前会话，管理员传员工姓名 `name` 时推送到该员工私聊，包括从未联系过的员工。模型不能指定平台实例、会话 ID、工号或 UID。图片、文件工具允许管理员指定已存在的宿主本地路径，普通用户只能转发当前消息的附件。
 
 | 工具 | 输入 | 发送内容 |
 | --- | --- | --- |
-| `kairo_send_voice` | `text` | 由 Driver 合成指定文字并发送语音 |
+| `kairo_send_voice` | `text`；可选 `name` | 由 Driver 合成语音；无姓名回复当前会话，管理员指定姓名时发员工私聊 |
 | `kairo_send_app_card` | `title`, `text`；可选 `linkUrl`, `name` | 应用/公告卡片，正文自动转义 HTML 并保留换行 |
 | `kairo_send_url_card` | `title`, `summary`, `linkUrl`；可选 `picUrl`, `name` | 链接卡片 |
 | `kairo_send_biz_card` | `title`, `text`, `bizType`, `bizUrl`；可选字符串数组 `summary` 和 `name` | 已有业务的任务（1）或日程（2）样式通知，不创建业务对象 |
 | `kairo_send_image` | 可选 `name`, `attachment_index` 或 `path` | 发送当前消息的图片，或管理员指定的已有本地图片 |
 | `kairo_send_file` | 可选 `name`, `attachment_index` 或 `path` | 发送当前消息的文件，或管理员指定的已有本地文件，保留文件名 |
 
-例如可以说“用语音说：明天上午九点开会”“给张三发公告卡片，标题是会议通知，正文是明天上午九点开会”，或附上附件后说“把这张图片发给张三”“把这个文件发给张三”。跨会话卡片和附件沿用上面的姓名通知规则：唯一且完全同名才直接发送，重名或模糊匹配须等待下一条用户消息选择；在人格中同时启用相应发送工具与 `kairo_select_employee`。普通用户仍可发当前会话卡片或转发当前附件，不能跨会话查人或推送。业务卡片需要真实、已知的业务路径；没有路径时不应编造。
+例如可以说“用语音说：明天上午九点开会”“给张三私聊发语音，内容是明天上午九点开会”“给张三发公告卡片，标题是会议通知，正文是明天上午九点开会”，或附上附件后说“把这张图片发给张三”“把这个文件发给张三”。跨会话语音、卡片和附件沿用上面的姓名通知规则：唯一且完全同名才直接发送，重名或模糊匹配须等待下一条用户消息选择；在人格中同时启用相应发送工具与 `kairo_select_employee`。普通用户仍可在当前会话发送语音、卡片或转发当前附件，不能跨会话查人或推送。业务卡片需要真实、已知的业务路径；没有路径时不应编造。
 
 附件默认使用当前消息中对应类型的第一个附件；`attachment_index` 从 1 开始，只统计图片或只统计文件。管理员可改用 `path` 指定 AstrBot 所在机器已有的本地文件，不能填 URL，不能与 `attachment_index` 同时使用。工具不会生成图片或文件，也不会猜测路径。展示姓名候选前先保存附件字节，选择时仍发送这份快照，不读取选择消息的附件或后来被修改的源文件。
 
 要按需选择输出，保持 `reply_format=text`，并关闭 AstrBot 自动语音回复；这两个配置不会被插件自动修改。`reply_format=card` 仍表示所有普通文字自动转卡片，不是按需开关。自然语言是否调用工具由模型判断，不是严格指令触发，不能保证每种口语或否定表达都判断正确。
 
-语音链路为工具 → `KairoClient.send_voice_text()` → `voice_text` 请求 → `Driver.sendVoice({text})`。不调用 AstrBot TTS、Python/Shell 工具或宿主 FFmpeg；使用 Driver 默认音色 `zh-CN-XiaoxiaoNeural`，不继承 AstrBot 的音色、语速或代理配置。运行桥接的 Node 进程必须能访问 Edge 服务。需要代理时，在桥接机器设置实际地址；Windows PowerShell 示例：
+当前会话语音经 `KairoClient.send_voice_text()` → `send/voice_text` 请求；按姓名语音经员工选择及身份复查 → `KairoClient.notify_employee_voice()` → `send_voice_to_user` 请求。两者均复用正在运行的桥接 Driver 调用 `sendVoice({text})`；定向请求传入准确工号，不新建 Driver/CDP 连接，不预发建立会话的文字，不切换客户端窗口。不调用 AstrBot TTS、Python/Shell 工具或宿主 FFmpeg；使用 Driver 默认音色 `zh-CN-XiaoxiaoNeural`，不继承 AstrBot 的音色、语速或代理配置。运行桥接的 Node 进程必须能访问 Edge 服务。需要代理时，在桥接机器设置实际地址；Windows PowerShell 示例：
 
 ```powershell
 $env:HTTPS_PROXY = "http://127.0.0.1:7897"
@@ -239,12 +239,12 @@ HTTPS_PROXY=http://127.0.0.1:7897 pnpm start
 
 Driver 优先使用非空 `HTTPS_PROXY`，其次非空 `HTTP_PROXY`；均未设置时保持直连。不会自动读取 Windows 系统代理，指定代理失败也不会再尝试直连。文字语音请求单独等待最多 90 秒，其他请求默认 30 秒；工具执行超时建议保留 120 秒或以上。排队、断线或超时仍可能返回未知结果，只按原操作 ID 查询，不重发。
 
-发送前仍核对当前员工/群名单及原始目标。同一事件的每个能力工具最多尝试一次发送，重复调用共享首次结果；只有原生确认成功才直接结束默认聊天 Agent 的下一轮续答，不另补“已发送”文字。不能撤回模型调用工具前已说出的前言；第三方 Agent 和子 Agent 不在本轮结束语义验证范围内。
+发送前仍核对当前员工/群名单及原始目标。同一事件的每个能力工具最多尝试一次发送，重复调用共享首次结果。当前会话的能力发送，以及按姓名直接发送或重名编号选择完成的语音，只有原生确认成功才返回 `None`，让默认聊天 Agent 不再续答或补“已发送”文字；失败或未知仍继续说明。不能撤回模型调用工具前已说出的前言；第三方 Agent 和子 Agent 不在本轮结束语义验证范围内。
 
 其他插件也可显式调用：
 
 ```python
-result = await client.send_voice_text("793803", "需要朗读的正文", operation_id="voice-job-42")
+result = await client.notify_employee_voice("E042", "需要朗读的正文", operation_id="voice-job-42")
 if result["status"] == "unknown":
     result = await client.get_send_status(result["operationId"])  # 只查询，不重新提交
 ```
@@ -273,6 +273,15 @@ if result["status"] == "unknown":
 历史原图缓存审计已通过真实原图下载、HTTP 上传及 AstrBot Image 文件字节核对，用户也已手动确认图片识别测试通过。代理没有为复核结果重复调用模型或主动发送消息；该历史结果不扩展为此次远程适配、所有模型、其他媒体或客户端组合的验收。上游远程附件验收只证明上游记录的环境和范围，不替代本插件端到端验收。
 
 新安装或升级插件后**重启 AstrBot 和桥接**。插件热重载不保证替换正在运行的平台实例。
+
+## 0.8.0 变更记录
+
+- `kairo_send_voice(text, name?)` 新增管理员按员工姓名私聊发送语音，支持首次联系；不传姓名仍发当前会话。重名时展示候选，等待下一条消息调用 `kairo_select_employee`，保留原始朗读正文。
+- 定向语音复用当前 Driver、准确工号、发送意图及名单检查，不新建 CDP 连接、不预发文字、不切换聊天窗口；发送结果未知时只按原 `operationId` 查询，不重发。合成/编码后及查人结束、创建草稿前核对连接绑定 UID，已观察到换号则拒绝提交。
+- 按姓名直接发送或重名选择完成的语音，只有确认成功才结束默认 Agent 的后续回答，避免补发“已发送”文字；失败或未知继续说明。
+- Driver 固定到已合入上述能力的上游 main `8507d4eb8ac458b197e34a52a60e87de6ff0a2be`，删除插件内 Driver 补丁及绑定，仅保留 WAV 与 Edge TTS 两份第三方补丁。桥接协议 v2、配置、数据目录和发送记录不变。
+- 实现阶段117项Node、442项Python回归及跨平台CI通过；独立编译产物烟测验证换号拒绝、默认Agent结束及unknown防重。Driver构建/类型、87项定点回归及lint通过；上游全套检查仍有已记录的人员搜索定时器测试失败，未掩盖或修改断言。真实接收端播放及真机换号行为仍需人工验收。
+- 插件元数据、Python项目和桥接版本统一为 `0.8.0`，标签为 `v0.8.0`。升级时在桥接目录执行 `node scripts/prepare-driver.mjs`、`pnpm install --frozen-lockfile`、`pnpm build`，再重启 AstrBot 与桥接；在人格中启用 `kairo_send_voice` 和 `kairo_select_employee`。跨会话发起账号须为 AstrBot 管理员，桥接 Node 进程须能访问 Edge TTS 服务。
 
 ## 0.7.0 变更记录
 
