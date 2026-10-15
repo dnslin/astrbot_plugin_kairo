@@ -274,6 +274,15 @@ if result["status"] == "unknown":
 
 新安装或升级插件后**重启 AstrBot 和桥接**。插件热重载不保证替换正在运行的平台实例。
 
+## 0.8.0 变更记录
+
+- `kairo_send_voice(text, name?)` 新增管理员按员工姓名私聊发送语音，支持首次联系；不传姓名仍发当前会话。重名时展示候选，等待下一条消息调用 `kairo_select_employee`，保留原始朗读正文。
+- 定向语音复用当前 Driver、准确工号、发送意图及名单检查，不新建 CDP 连接、不预发文字、不切换聊天窗口；发送结果未知时只按原 `operationId` 查询，不重发。合成/编码后及查人结束、创建草稿前核对连接绑定 UID，已观察到换号则拒绝提交。
+- 按姓名直接发送或重名选择完成的语音，只有确认成功才结束默认 Agent 的后续回答，避免补发“已发送”文字；失败或未知继续说明。
+- Driver 固定到已合入上述能力的上游 main `8507d4eb8ac458b197e34a52a60e87de6ff0a2be`，删除插件内 Driver 补丁及绑定，仅保留 WAV 与 Edge TTS 两份第三方补丁。桥接协议 v2、配置、数据目录和发送记录不变。
+- 实现阶段117项Node、442项Python回归及跨平台CI通过；独立编译产物烟测验证换号拒绝、默认Agent结束及unknown防重。Driver构建/类型、87项定点回归及lint通过；上游全套检查仍有已记录的人员搜索定时器测试失败，未掩盖或修改断言。真实接收端播放及真机换号行为仍需人工验收。
+- 插件元数据、Python项目和桥接版本统一为 `0.8.0`，标签为 `v0.8.0`。升级时在桥接目录执行 `node scripts/prepare-driver.mjs`、`pnpm install --frozen-lockfile`、`pnpm build`，再重启 AstrBot 与桥接；在人格中启用 `kairo_send_voice` 和 `kairo_select_employee`。跨会话发起账号须为 AstrBot 管理员，桥接 Node 进程须能访问 Edge TTS 服务。
+
 ## 0.7.0 变更记录
 
 - 新增只读 `kairo_get_group_members`，支持普通成员和管理员查询当前 Kairo 群的完整人数、UID、真实工号、姓名、部门及岗位；不接受其他群或截断参数，不发送消息，私聊及非 Kairo 会话隐藏并拒绝调用。

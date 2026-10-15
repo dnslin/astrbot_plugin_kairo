@@ -1,7 +1,7 @@
 name: astrbot_plugin_kairo
 display_name: Kairo（KK9）
 desc: 通过 kairo-driver 接入 KK9 群聊、媒体、卡片和管理员姓名/工号通知，统一收发黑白名单。
-version: 0.7.0
+version: 0.8.0
 author: dnslin
 repo: https://github.com/dnslin/astrbot_plugin_kairo
 astrbot_version: ">=4.29.0b1,<5"
