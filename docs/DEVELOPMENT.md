@@ -18,10 +18,10 @@
 ## 依赖来源
 
 - AstrBot 验证基线：`v4.29.0-beta.1`，元数据约束 `>=4.29.0b1,<5`。该基线不是稳定版承诺。
-- Driver 固定提交：`db186e05a7df6b94de041a9e8f9f8787e1d9d3a6`，原生包含准确工号卡片及图片/文件发送，并保留 Edge SDK 1.2.11 资源清理、完整人员搜索和远程附件；包版本仍为 2.0.1，不等同于旧 `v2.0.1` 发布提交。源码归档与两份音频依赖补丁保持一致；`bridge/patches/@kairo__driver@2.0.1.patch` 通过标准 pnpm 机制补齐准确工号语音，不修改 vendor checkout。
+- Driver 固定提交：`8507d4eb8ac458b197e34a52a60e87de6ff0a2be`，原生包含准确工号卡片、图片/文件及语音、连接发送者绑定，并保留 Edge SDK 1.2.11 清理、完整人员搜索和远程附件。包版本仍为 2.0.1，源码身份以提交为准；插件不再配置 Driver 自身补丁，两份第三方音频依赖补丁保持与上游一致，不修改 vendor checkout。
 - Python 3.12+、Node.js 22.13+（推荐 24）、pnpm 11.19.0。
 
-Python 插件只声明 `aiohttp`，AstrBot API 与工具 schema 校验依赖由宿主提供。Driver 尚未发布 npm；准备脚本固定检出、按上游锁文件安装，再通过标准 `pnpm pack` 的 prepack 构建并生成 `vendor/kairo-driver-db186e05a7df.tgz`。桥接使用该相对路径归档依赖，直接消费 Driver 已合入的卡片及媒体定向实现，冻结安装应用语音定向补丁，原始 checkout 不修改。桥接同步上游 WAV 解码及 `node-edge-tts@1.2.11.patch` 两份音频依赖补丁，SDK override 锁定 1.2.11。更新固定提交时同步准备脚本、归档名、实际音频补丁、override 和锁文件，并核对语音补丁是否仍需应用。保留完整人员搜索、群成员只读查询及既有原图、代理和 CONNECT 超时清理行为。
+Python 插件只声明 `aiohttp`，AstrBot API 与工具 schema 校验依赖由宿主提供。Driver 尚未发布 npm；准备脚本固定检出、按上游锁文件安装，再通过标准 `pnpm pack` 的 prepack 构建并生成 `vendor/kairo-driver-8507d4eb8ac4.tgz`。桥接使用该相对归档，直接消费上游全部定向发送和语音身份核对，无 Driver 自身补丁。桥接同步上游 WAV 解码及 `node-edge-tts@1.2.11.patch` 两份第三方补丁，SDK override 锁定1.2.11；更新提交时同步准备脚本、归档名、音频补丁、override和锁文件。保留完整人员搜索、群成员只读查询及既有原图、代理和 CONNECT 超时清理行为。
 
 准备过程先在独立临时目录检出，完成后才发布最终源码目录；中断可重试。已有最终目录若提交不符或跟踪文件修改则明确报错，不覆盖修改。归档由准备脚本生成，不提交或引用开发机器上的临时包；pnpm 固定归档时间戳，重复构建打包的字节一致。首次准备使用 `node scripts/prepare-driver.mjs`，避免 pnpm 在缺少归档时先自动安装依赖。
 
@@ -109,7 +109,7 @@ CI 的 Node 检查覆盖 Windows/Linux，集成任务引用 `v4.29.0-beta.1`。0
 - [AstrBot 平台注册源码](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.0-beta.1/astrbot/core/platform/register.py)
 - [AstrBot 平台生命周期源码](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.0-beta.1/astrbot/core/platform/platform.py)
 - [AstrBot 消息模型源码](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.0-beta.1/astrbot/core/platform/astrbot_message.py)
-- [Driver 公开接口](https://github.com/dnslin/kairo-driver/blob/db186e05a7df6b94de041a9e8f9f8787e1d9d3a6/src/types/index.ts)
+- [Driver 公开接口](https://github.com/dnslin/kairo-driver/blob/8507d4eb8ac458b197e34a52a60e87de6ff0a2be/src/types/index.ts)
 - [aiohttp WebSocket 与文件响应](https://docs.aiohttp.org/en/stable/web_reference.html)
 
 官方平台教程部分示例仍采用旧构造参数，实现以验证基线源码为准。规划时调查记录保留在 [plan.md](../tasks/plan.md)，其中旧版问题是调查快照，不是当前实现说明。
@@ -288,4 +288,32 @@ Driver 基础提交保持不变。`pnpm patchedDependencies` 应用 `@kairo__dri
 先运行新增回归复现缺口：Python 语音专项 14 项失败；真实安装 Driver 专项 7 项失败。实现后实际运行 `node scripts/prepare-driver.mjs && pnpm install --frozen-lockfile && pnpm check`：准备、冻结安装、TypeScript 构建及 110 项 Node 通过。`D:/Person/AstrBot/.venv/Scripts/python.exe -m pytest -q --tb=short` 全套 409 项通过；相关 Python 文件与 tests 的 Ruff 规则及格式检查通过，保留宿主已有 audioop 弃用警告。真实安装包测试实际执行语音准备与发送 renderer，仅替代外部 TTS 服务、原生编码器及 IPC，覆盖准确工号、首次/已有私聊、正式/错误回执、取消与 unknown 防重。
 
 独立 `python.exe artifacts/tmp/directed-voice-smoke.py` 使用真实 AstrBot 注册工具、平台事件、HTTP/WS、编译桥接和 SQLite，只有 KK9 使用 Fake。重名选择保存原文并首次私聊成功；普通成员跨会话被拒绝；unknown 并发/重复调用不重发。共 2 次 Fake 语音提交，持久状态为 sent、unknown，Driver 代次始终为 1，没有定向语音发回原群。首次脚本读 SQLite 后未显式关闭读取连接，Windows 临时目录删除失败；修正临时脚本后整轮退出 0，残留目录已清理。隔离进程反转姓名路由后，定向语音回归按预期失败，持久源码未修改。一次性脚本与隔离数据已清理，未连接生产 CDP、发送真实消息、重启生产服务或验证模型自然语言选择及真实接收端播放。
+
+
+## PR #3 评审修正（本轮验证）
+
+四项修正按 `tasks/plan.md` 第 12 节实施。Driver 的公开语音门面将连接绑定 UID 传给内部发送实现，合成/编码后读取的原生上下文以及查人结束、创建草稿前的最新身份都必须一致。内部 UID 参数必填，不在准备后选择新账号，不新增公开参数、CDP、重试或锁。固定 revision、原始归档、协议 v2 和数据库格式不变；标准 pnpm patch/patch-commit 重新生成补丁及锁文件，源码、JS、声明和映射同步。
+
+`_Pending.content` 一次保存可直接传给客户端的 text/voice_text/card/media 内容，删除发送时按字符串/kind 猜类型的分支。附件仍先缓存快照，再查人。仅确认成功的语音在直接发送及编号选择后返回 None；候选及错误格式、其他通知类型成功回执保持原行为。共同生命周期参数化覆盖文字和语音，专属语音及真实 Agent 回归归入 `tests/test_voice_tools.py`；`test_notifications.py` 从 1139 行降至 958 行，未削减权限、快照、隔离、取消和防重覆盖。
+
+实际执行与结果：
+
+- `bridge/` 下 `node scripts/prepare-driver.mjs && pnpm install --frozen-lockfile && pnpm check`：原始固定包重新准备、冻结安装、TypeScript 构建及 117 项 Node 回归通过，无跳过。新增安装包回归覆盖公开 Driver connect → Bridge.execute 的定向/当前会话语音、绑定缺失及准备/查人期间换号。
+- AstrBot 虚拟环境 `python.exe -m pytest -q --tb=short tests/test_notifications.py tests/test_voice_tools.py tests/test_media_tools.py tests/test_tools.py`：288 项通过；随后格式整理后执行 `python.exe -m pytest -q --tb=short`：全套 442 项通过，仅宿主已有 audioop 弃用警告。
+- `python.exe -m ruff check notifications.py tests`、`python.exe -m ruff format --check notifications.py tests`：通过，13 个文件格式符合要求。首次检查发现新模块导入顺序，修正并仅格式化本轮改动文件后通过。
+- 独立 Node 内联烟测运行实际安装 Driver 和编译桥接：正常绑定账号返回 sent；编码及查人期间由 UID 1 改为 99 均返回前置 failed，零草稿、零提交。
+- 独立 Python 内联烟测运行真实注册工具、默认宿主 Agent、编译桥接、HTTP/WS 和 SQLite；仅 KK9 使用 Fake。唯一姓名及重名选择成功均为一轮模型，unknown 为两轮解释；原文和选择目标保留，重复调用/状态查询不重发。共 3 次定向语音提交，来源群 0 次，Driver 代次 1，持久状态 sent/sent/unknown。
+
+首轮独立脚本因新增 fixture 相对导入及 SQLite 读取连接未显式关闭而退出非零；仅修正一次性入口与连接关闭后，两项烟测均退出 0，临时入口、数据库及首轮残留清理完成。没有为此修改产品逻辑、放宽断言或隐藏错误。生成补丁使用的临时 localhost registry 及 patch 目录已清理，标准安装不依赖它们。未连接生产 KK9、发送真实消息、重启服务、提交或推送；不将离线 IPC/TTS 替身、sent 回执当作真机换号原子性或接收端播放验收。
+
+
+## Driver 语音上游合入与无补丁切换
+
+用户确认将语音实现归回 Driver。上游 main 已推送 `8507d4eb8ac458b197e34a52a60e87de6ff0a2be`，包含准确工号语音、取消、正式会话与连接 UID 绑定；源码、公开类型、Fake 及 Vitest 回归合入，不发布 npm/tag。上游最终构建/类型检查、三文件87项语音/媒体回归、全量lint及编译入口烟测通过。完整 pnpm check 实际为757通过、1失败、1既有Linux用例跳过，失败仍是历史记录的人员搜索定时器期望0/实际1；没有修改该无关实现/断言或重复运行确认，不宣称上游全套全绿。
+
+插件准备脚本、归档依赖与锁文件固定到新提交，删除 `@kairo/driver` 的补丁文件及 patchedDependencies 条目；仅保留 WAV 与 Edge SDK 两份第三方补丁。旧 vendor checkout 保留，不覆盖使用者修改。历史补丁章节是之前阶段的记录，不是当前安装方式。
+
+本轮实际从 GitHub 重新准备固定归档，单次环境配置使用已有 Git 代理，未修改持久配置。`node scripts/prepare-driver.mjs`、`pnpm install --lockfile-only --offline && pnpm install --frozen-lockfile && pnpm check` 成功，桥接构建及117项Node通过；AstrBot虚拟环境 `python.exe -m pytest -q --tb=short` 全套442项通过，仅宿主既有audioop弃用警告。Python源码自上轮Ruff通过后未再修改，本轮不重复运行未变化的Ruff检查。
+
+独立离线烟测再次使用无Driver补丁的实际安装包及编译桥接：正常绑定账号sent，编码/查人期间换号均前置failed且零草稿零提交。真实注册工具、默认Agent、HTTP/WS和SQLite联调中，唯一姓名与重名选择成功均一轮模型，unknown为两轮解释；原文/准确目标保存，重复和查询不重发，3次定向语音、来源群0次、Driver代次1、持久状态sent/sent/unknown。临时入口与数据自动清理；未连接生产KK9、发真实消息、重启服务或冒充接收端播放验收。
 

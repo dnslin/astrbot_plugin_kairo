@@ -147,9 +147,14 @@ def wrap(event):
     return ContextWrapper(AstrAgentContext(context=context, event=event))
 
 
-def tools():
+def tools(tool_type=KairoNotifyEmployeeTool):
     manager = KairoNotifications()
-    return KairoNotifyEmployeeTool(manager), KairoSelectEmployeeTool(manager)
+    return tool_type(manager), KairoSelectEmployeeTool(manager)
+
+
+@pytest.fixture(params=[KairoNotifyEmployeeTool, KairoSendVoiceTool])
+def notification_tool_type(request):
+    return request.param
 
 
 @pytest.mark.parametrize("keyword", ["", "   "])
@@ -255,6 +260,8 @@ async def test_fuzzy_or_ambiguous_names_wait_for_real_next_message(candidates):
     origin = make_event(boundary)
     result = await notify.call(wrap(origin), name="张三", text="原始正文")
     assert not boundary.sends
+    pending = notify._manager._pending[notify._manager._scope(origin)]
+    assert pending.content == {"text": "原始正文"}
     for i, candidate in enumerate(candidates, 1):
         assert str(i) in result and candidate["name"] in result and candidate["loginName"] in result
     # Calling selection immediately in the originating event is not confirmation.
@@ -524,11 +531,14 @@ async def test_originating_policy_is_rechecked_after_search_before_auto_send(rul
 
 
 @pytest.mark.parametrize("select", [False, True])
-async def test_duplicate_concurrent_and_repeated_event_attempts_submit_once(select):
+@pytest.mark.parametrize("status", ["sent", "failed", "unknown"])
+async def test_duplicate_concurrent_and_repeated_event_attempts_submit_once(
+    select, status, notification_tool_type
+):
     candidates = [employee(), employee("uid-b", "张三", "EmployeeB")] if select else [employee()]
-    boundary = NativeBoundary(candidates, block_send=True)
+    boundary = NativeBoundary(candidates, status=status, block_send=True)
     manager = KairoNotifications()
-    notify, choose = KairoNotifyEmployeeTool(manager), KairoSelectEmployeeTool(manager)
+    notify, choose = notification_tool_type(manager), KairoSelectEmployeeTool(manager)
     if select:
         await notify.call(wrap(make_event(boundary)), name="张三", text="body")
         event = make_event(boundary, "2", message_id="choice-1")
@@ -537,14 +547,25 @@ async def test_duplicate_concurrent_and_repeated_event_attempts_submit_once(sele
         event, tool, args = make_event(boundary), notify, {"name": "张三", "text": "body"}
     first = asyncio.create_task(tool.call(wrap(event), **args))
     await asyncio.wait_for(boundary.started.wait(), 5)
-    second = asyncio.create_task(type(tool)(manager).call(wrap(event), **args))
+    duplicate_args = args if select else {**args, "text": "different duplicate body"}
+    second = asyncio.create_task(type(tool)(manager).call(wrap(event), **duplicate_args))
     await asyncio.sleep(0)
     assert len(boundary.sends) == 1
     boundary.release.set()
     results = await asyncio.gather(first, second)
     assert results[0] == results[1]
-    assert await tool.call(wrap(event), **args) == results[0]
+    assert await tool.call(wrap(event), **duplicate_args) == results[0]
     assert len(boundary.sends) == 1
+    assert boundary.sends[0]["text"] == "body"
+    if status == "sent" and notification_tool_type is KairoSendVoiceTool:
+        assert results == [None, None]
+    else:
+        assert status in results[0]
+        assert f"operationId={boundary.sends[0]['operation_id']}" in results[0]
+    status_calls = [call for call in boundary.calls if call[0] == "get_send_status"]
+    assert len(status_calls) == int(status == "unknown")
+    if status_calls:
+        assert status_calls[0][1] == {"operation_id": boundary.sends[0]["operation_id"]}
 
 
 async def test_distinct_selection_events_cannot_race_the_same_pending_send():
@@ -561,9 +582,11 @@ async def test_distinct_selection_events_cannot_race_the_same_pending_send():
     await first
 
 
-async def test_canceling_duplicate_waiter_does_not_cancel_original_native_attempt():
+async def test_canceling_duplicate_waiter_does_not_cancel_original_native_attempt(
+    notification_tool_type,
+):
     boundary = NativeBoundary(block_send=True)
-    notify, _ = tools()
+    notify, _ = tools(notification_tool_type)
     event = make_event(boundary)
     first = asyncio.create_task(notify.call(wrap(event), name="张三", text="body"))
     await asyncio.wait_for(boundary.started.wait(), 5)
@@ -573,15 +596,21 @@ async def test_canceling_duplicate_waiter_does_not_cancel_original_native_attemp
     with pytest.raises(asyncio.CancelledError):
         await duplicate
     boundary.release.set()
-    assert "sent" in await first
+    result = await first
+    if notification_tool_type is KairoSendVoiceTool:
+        assert result is None
+    else:
+        assert "sent" in result
     assert len(boundary.sends) == 1
 
 
 @pytest.mark.parametrize("select", [False, True])
-async def test_canceled_original_attempt_is_unknown_and_never_retried(select):
+async def test_canceled_original_attempt_is_unknown_and_never_retried(
+    select, notification_tool_type
+):
     candidates = [employee(), employee("uid-b", "张三", "EmployeeB")] if select else [employee()]
     boundary = NativeBoundary(candidates, block_send=True)
-    notify, choose = tools()
+    notify, choose = tools(notification_tool_type)
     if select:
         await notify.call(wrap(make_event(boundary)), name="张三", text="body")
         event = make_event(boundary, "2", message_id="choice-1")
@@ -622,10 +651,10 @@ async def test_canceled_original_attempt_is_unknown_and_never_retried(select):
     ],
 )
 async def test_uncertain_failed_and_timeout_outcomes_preserve_diagnostics_without_resend(
-    status, error
+    status, error, notification_tool_type
 ):
     boundary = NativeBoundary(status=status, error=error)
-    notify, choose = tools()
+    notify, choose = tools(notification_tool_type)
     event = make_event(boundary)
     result = await notify.call(wrap(event), name="张三", text="body")
     assert ("unknown" if status == "unknown" else "failed") in result
@@ -844,6 +873,8 @@ async def test_directed_card_selection_binds_original_payload_and_uid(tool_type,
     source = make_event(boundary)
     listing = await tool.call(wrap(source), name="张三", **args)
     assert "EmployeeB" in listing and not boundary.sends
+    pending = manager._pending[manager._scope(source)]
+    assert pending.content == {"card": {"type": f"kairo.{kind.removesuffix('_card')}", **card}}
     assert "错误" in await choose.call(wrap(source), choice=2)
     boundary.employees.reverse()
     result = await choose.call(wrap(make_event(boundary, "选第2个", message_id="choice")), choice=2)
@@ -925,215 +956,3 @@ async def test_pending_business_card_keeps_summary_snapshot():
         wrap(make_event(boundary, "2", message_id="choice")), choice=2
     )
     assert boundary.sends[0]["card"]["summary"] == ["原始摘要"]
-
-
-async def test_directed_voice_exact_name_uses_private_login_and_preserves_text_and_budget():
-    boundary = NativeBoundary([employee(login="e00042")])
-    manager = KairoNotifications()
-    event = make_event(boundary, "请给张三私聊发语音")
-    event.session_id = "rewritten-context"
-    body = "  原始语音正文\n保留空格  "
-    result = await KairoSendVoiceTool(manager).call(wrap(event), name=" 张三 ", text=body)
-    assert "sent" in result and "sessionId=98765" in result
-    assert len(boundary.sends) == 1
-    sent = boundary.sends[0]
-    assert sent == {"login_name": "e00042", "text": body, "operation_id": sent["operation_id"]}
-    assert [call[0] for call in boundary.calls] == [
-        "search_employees",
-        "get_user_profile",
-        "send_voice_to_user",
-    ]
-    assert boundary.calls[-1][2] == 90
-    assert f"operationId={sent['operation_id']}" in result
-    assert event._has_send_oper
-
-
-async def test_directed_voice_ambiguous_name_requires_native_next_choice_and_text_snapshot():
-    boundary = NativeBoundary([employee(), employee("uid-b", "张三", "EmployeeB")])
-    manager = KairoNotifications()
-    voice, choose = KairoSendVoiceTool(manager), KairoSelectEmployeeTool(manager)
-    source = make_event(boundary)
-    args = {"name": "张三", "text": "原始语音\n下一行"}
-    listing = await voice.call(wrap(source), **args)
-    assert "EmployeeA" in listing and "EmployeeB" in listing
-    assert not boundary.sends
-    assert "错误" in await choose.call(wrap(source), choice=2)
-    fabricated = make_event(boundary, "不是选择", message_id="fabricated")
-    fabricated.message_str = "2"
-    assert "INVALID_ARGUMENT" in await choose.call(wrap(fabricated), choice=2)
-    args["text"] = "选择时不得替换原正文"
-    assert await voice.call(wrap(source), **args) == listing
-    boundary.employees.reverse()
-    choice = make_event(boundary, "选第2个", message_id="voice-choice")
-    result = await choose.call(wrap(choice), choice=2)
-    assert "sent" in result
-    assert [(send["login_name"], send["text"]) for send in boundary.sends] == [
-        ("EmployeeB", "原始语音\n下一行")
-    ]
-    assert boundary.calls[-1][0] == "send_voice_to_user"
-
-
-async def test_member_cannot_direct_voice_but_can_send_to_current_conversation():
-    boundary = NativeBoundary()
-    voice = KairoSendVoiceTool(KairoNotifications())
-    event = make_event(boundary, admin=False)
-    assert "ACCESS_DENIED" in await voice.call(wrap(event), name="张三", text="拒绝")
-    assert not boundary.calls
-    assert await voice.call(wrap(event), text="当前会话朗读") is None
-    assert boundary.sends[0]["target_session_id"] == "12345"
-    assert boundary.sends[0]["kind"] == "voice_text"
-    assert boundary.calls[-1][0] == "send" and boundary.calls[-1][2] == 90
-
-
-@pytest.mark.parametrize("failure", ["uid", "login", "missing", "policy", "actor", "group"])
-async def test_directed_voice_rechecks_identity_and_lists_after_selection(failure):
-    boundary = NativeBoundary([employee(), employee("uid-b", "张三", "EmployeeB")])
-    manager = KairoNotifications()
-    config = {}
-    await KairoSendVoiceTool(manager).call(
-        wrap(make_event(boundary, config=config)), name="张三", text="不得发送"
-    )
-    if failure == "uid":
-        boundary.profiles["uid-b"]["id"] = "changed-uid"
-    elif failure == "login":
-        boundary.profiles["uid-b"]["loginName"] = "Changed"
-    elif failure == "missing":
-        del boundary.profiles["uid-b"]
-    elif failure == "policy":
-        config["user_blacklist"] = ["EmployeeB"]
-    elif failure == "actor":
-        config["user_blacklist"] = ["SenderA"]
-    else:
-        config["group_blacklist"] = ["12345"]
-    result = await KairoSelectEmployeeTool(manager).call(
-        wrap(make_event(boundary, "2", message_id="choice", config=config)), choice=2
-    )
-    assert ("IDENTITY" if failure in {"uid", "login", "missing"} else "ACCESS_DENIED") in result
-    assert not boundary.sends
-
-
-@pytest.mark.parametrize("status", ["sent", "unknown"])
-async def test_directed_voice_concurrent_duplicates_share_operation_and_never_resend(status):
-    boundary = NativeBoundary(status=status, block_send=True)
-    manager = KairoNotifications()
-    event = make_event(boundary)
-    first = asyncio.create_task(
-        KairoSendVoiceTool(manager).call(wrap(event), name="张三", text="原文")
-    )
-    await boundary.started.wait()
-    duplicate = asyncio.create_task(
-        KairoSendVoiceTool(manager).call(wrap(event), name="张三", text="不得改变正文")
-    )
-    await asyncio.sleep(0)
-    assert len(boundary.sends) == 1
-    boundary.release.set()
-    results = await asyncio.gather(first, duplicate)
-    assert results[0] == results[1] and status in results[0]
-    assert (
-        await KairoSendVoiceTool(manager).call(wrap(event), name="张三", text="重试") == results[0]
-    )
-    assert len(boundary.sends) == 1
-    status_calls = [call for call in boundary.calls if call[0] == "get_send_status"]
-    assert len(status_calls) == (1 if status == "unknown" else 0)
-    if status_calls:
-        assert status_calls[0][1] == {"operation_id": boundary.sends[0]["operation_id"]}
-
-
-@pytest.mark.parametrize("directed_first", [False, True])
-async def test_current_and_directed_voice_share_one_event_capability_attempt(directed_first):
-    boundary = NativeBoundary(block_send=True)
-    manager = KairoNotifications()
-    event = make_event(boundary)
-    first_args = {"text": "首次正文", **({"name": "张三"} if directed_first else {})}
-    second_args = {"text": "第二正文", **({} if directed_first else {"name": "张三"})}
-    first = asyncio.create_task(KairoSendVoiceTool(manager).call(wrap(event), **first_args))
-    await boundary.started.wait()
-    duplicate = asyncio.create_task(KairoSendVoiceTool(manager).call(wrap(event), **second_args))
-    await asyncio.sleep(0)
-    assert len(boundary.sends) == 1
-    boundary.release.set()
-    first_result, second_result = await asyncio.gather(first, duplicate)
-    assert first_result == second_result
-    assert boundary.sends[0]["text"] == "首次正文"
-    assert [call[0] for call in boundary.calls].count("search_employees") == int(directed_first)
-
-
-@pytest.mark.parametrize(
-    "arguments",
-    [
-        {},
-        {"text": "text", "voice_text": "voice"},
-        {"card": {"type": "kairo.app"}, "voice_text": "voice"},
-        {"media": {"kind": "image"}, "voice_text": "voice"},
-    ],
-)
-async def test_notify_employee_uid_voice_is_exclusive_with_text_card_and_media(arguments):
-    boundary = NativeBoundary()
-    client = KairoClient(boundary, KairoAccessPolicy({}))
-    with pytest.raises(ValueError):
-        await client.notify_employee_uid("uid-a", "EmployeeA", **arguments)
-    assert not boundary.calls
-
-
-@pytest.mark.parametrize("login,text", [(" ", "正文"), ("e00042", " ")])
-async def test_notify_employee_voice_rejects_empty_login_or_body_before_native(login, text):
-    boundary = NativeBoundary()
-    client = KairoClient(boundary, KairoAccessPolicy({}))
-    with pytest.raises(ValueError):
-        await client.notify_employee_voice(login, text, operation_id="voice")
-    assert not boundary.calls
-
-
-async def test_notify_employee_voice_normalizes_only_outer_login_spaces_and_checks_policy():
-    boundary = NativeBoundary()
-    config = {"enable_user_whitelist": True, "user_whitelist": ["e00042"]}
-    client = KairoClient(boundary, KairoAccessPolicy(config))
-    result = await client.notify_employee_voice(" e00042 ", " 原始正文 ", operation_id="voice")
-    assert result["operationId"] == "voice"
-    assert boundary.calls == [
-        (
-            "send_voice_to_user",
-            {"login_name": "e00042", "text": " 原始正文 ", "operation_id": "voice"},
-            90,
-        )
-    ]
-    with pytest.raises(BridgeError) as error:
-        await client.notify_employee_voice("E00042", "不得发送", operation_id="blocked")
-    assert error.value.code == "ACCESS_DENIED" and len(boundary.sends) == 1
-
-
-@pytest.mark.parametrize(
-    "arguments",
-    [
-        {"name": " ", "text": "正文"},
-        {"name": "张三", "text": " "},
-        {"name": "张三", "text": "😀" * 64001},
-        {"name": "张三", "text": "正文", "login_name": "EmployeeB"},
-    ],
-)
-async def test_directed_voice_schema_rejects_before_search(arguments):
-    boundary = NativeBoundary()
-    result = await KairoSendVoiceTool(KairoNotifications()).call(
-        wrap(make_event(boundary)), **arguments
-    )
-    assert "INVALID_ARGUMENT" in result and not boundary.calls
-
-
-@pytest.mark.parametrize("code", ["TIMEOUT", "CONNECTION_LOST"])
-async def test_directed_voice_transport_uncertainty_queries_same_operation_without_retry(code):
-    boundary = NativeBoundary(error=BridgeError(code, "native acknowledgement missing"))
-    client = KairoClient(boundary, KairoAccessPolicy({}))
-    result = await client.notify_employee_voice(
-        "EmployeeA", "原始正文", operation_id="stable-voice"
-    )
-    assert result["status"] == "unknown" and result["operationId"] == "stable-voice"
-    assert result["code"] == code
-    assert boundary.calls == [
-        (
-            "send_voice_to_user",
-            {"login_name": "EmployeeA", "text": "原始正文", "operation_id": "stable-voice"},
-            90,
-        ),
-        ("get_send_status", {"operation_id": "stable-voice"}, None),
-    ]
-    assert len(boundary.sends) == 1

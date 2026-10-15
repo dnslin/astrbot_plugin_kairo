@@ -2,7 +2,6 @@ allowBuilds:
   esbuild: true
 patchedDependencies:
   '@audio/decode-wav@1.5.0': patches/@audio__decode-wav@1.5.0.patch
-  '@kairo/driver@2.0.1': patches/@kairo__driver@2.0.1.patch
   node-edge-tts@1.2.11: patches/node-edge-tts@1.2.11.patch
 overrides:
   '@audio/decode-wav': 1.5.0

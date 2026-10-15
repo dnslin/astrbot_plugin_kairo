@@ -8,11 +8,22 @@ import { pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import test from 'node:test';
 import { FakeKK9Driver, KK9Driver } from '@kairo/driver';
-import type { IKK9Driver, SendOptions } from '@kairo/driver';
+import type { IKK9Driver, KK9VoiceOptions, SendOptions, SendResult } from '@kairo/driver';
+import { Bridge } from '../src/bridge.js';
+import { parseConfig } from '../src/config.js';
+import { parseRequest, type BridgeRequest } from '../src/protocol.js';
 
 const require = createRequire(import.meta.url);
 const entry = pathToFileURL(require.resolve('@kairo/driver'));
-type VoiceOps = Pick<IKK9Driver, 'sendVoice' | 'getSendStatus'> & { cancelPendingSends(): Promise<void> };
+type VoiceOps = Pick<IKK9Driver, 'getSendStatus'> & {
+  sendVoice(input: KK9VoiceOptions, options: SendOptions, expectedSenderUid: string | number | undefined): Promise<SendResult>;
+  cancelPendingSends(): Promise<void>;
+};
+type DriverTransportBoundary = {
+  cdp: { connect(): Promise<void>; getStatus(): string; evaluate(script: string, timeout?: number): Promise<unknown> };
+  eventBridge: { connect(): Promise<void>; disconnect(): Promise<void> };
+};
+type BridgeExecutionBoundary = { execute(request: BridgeRequest, driver: IKK9Driver): Promise<SendResult> };
 // Installed package exports hide internals; runtime resolution intentionally tests the consumer artifact.
 const { BridgeMessageOps }: { BridgeMessageOps: new (cdp: VoiceRenderer) => VoiceOps } = await import(new URL('./bridge/message-ops.js', entry).href);
 type NativeRow = { contentType: number; content: { duration: number; data: string }; sender: number; receiver: number; sessionType: number; sessionID: number; msgFlag: string; id?: number; msgIdx?: number; status: string };
@@ -133,13 +144,13 @@ test('voice: text synthesis uses real preparation and native voice renderer, nev
   const ops = new BridgeMessageOps(native);
   const input = { text: '  读出 <研发&财务>\n正文  ' };
   const options = { targetLoginName: '00AbC', operationId: 'voice-tts-native', verifyTimeoutMs: 30 };
-  const result = await ops.sendVoice(input, options);
+  const result = await ops.sendVoice(input, options, 1);
   assert.equal(result.status, 'sent'); assert.equal(result.sessionId, '77');
   assert.deepEqual(syntheses.map(call => call.text), [input.text.trim()]);
   assert.equal(fs.existsSync(syntheses[0]!.file), false);
   assert.equal(fs.existsSync(path.dirname(syntheses[0]!.file)), false);
   assert.equal(native.sent.length, 1); assert.equal(native.sent[0]?.contentType, 2); assert.equal(native.encodes, 1);
-  assert.equal((await ops.sendVoice(input, options)).status, 'sent');
+  assert.equal((await ops.sendVoice(input, options, 1)).status, 'sent');
   assert.equal(syntheses.length, 1); assert.equal(native.sent.length, 1);
 });
 
@@ -148,7 +159,7 @@ test('voice: exact first-contact renderer and formal receipt', async t => {
     const ops = new BridgeMessageOps(native);
     const input = { filePath: native.source() };
     const options = { targetLoginName: ' 00AbC ', operationId: 'voice-first-contact', verifyTimeoutMs: 30 };
-    const result = await ops.sendVoice(input, options);
+    const result = await ops.sendVoice(input, options, 1);
     assert.equal(result.status, 'sent'); assert.equal(result.messageId, '901'); assert.equal(result.sessionId, '77');
     assert.equal(result.receipt?.sessionId, '77'); assert.equal(result.receipt?.messageId, '901');
     assert.equal(native.sent.length, 1); assert.equal(native.sent[0]?.contentType, 2);
@@ -158,16 +169,16 @@ test('voice: exact first-contact renderer and formal receipt', async t => {
     assert.deepEqual(Object.keys(native.sent[0]!.content).sort(), ['data', 'duration']);
     assert.deepEqual(JSON.parse(JSON.stringify(native.calls.find(call => call.method === 'unionSearch')?.args[0])), { type: 'user', kwd: '00AbC', pageNo: 1, pageSize: 200 });
     assert.ok(native.budgets.includes(20030));
-    assert.equal((await ops.sendVoice(input, { ...options, targetLoginName: '00AbC' })).status, 'sent');
-    await assert.rejects(ops.sendVoice(input, { ...options, targetLoginName: '00abc' }), /operationId|指纹|fingerprint|冲突/);
-    await assert.rejects(ops.sendVoice({ filePath: input.filePath + '.different' }, options), /operationId|指纹|fingerprint|冲突/);
+    assert.equal((await ops.sendVoice(input, { ...options, targetLoginName: '00AbC' }, 1)).status, 'sent');
+    await assert.rejects(ops.sendVoice(input, { ...options, targetLoginName: '00abc' }, 1), /operationId|指纹|fingerprint|冲突/);
+    await assert.rejects(ops.sendVoice({ filePath: input.filePath + '.different' }, options, 1), /operationId|指纹|fingerprint|冲突/);
     assert.equal(native.sent.length, 1); assert.equal(native.encodes, 1);
     assert.equal(native.listenerCount('0-2-sendMsgCallback'), 0); assert.equal(native.window.__kairo_pending_sends?.size, 0); assert.equal(native.timers.size, 0);
   });
 
 test('voice: explicit session remains unchanged and bypasses employee lookup', async t => {
   const native = new VoiceRenderer(); t.after(() => native.close());
-  const result = await new BridgeMessageOps(native).sendVoice({ filePath: native.source() }, { targetSessionId: '77', operationId: 'voice-session', verifyTimeoutMs: 30 });
+  const result = await new BridgeMessageOps(native).sendVoice({ filePath: native.source() }, { targetSessionId: '77', operationId: 'voice-session', verifyTimeoutMs: 30 }, 1);
   assert.equal(result.status, 'sent'); assert.equal(native.drafts[0]?.sessionID, 77);
   assert.equal(native.calls.filter(call => call.method === 'unionSearch').length, 0); assert.equal(native.sent[0]?.contentType, 2);
 });
@@ -177,12 +188,12 @@ for (const mode of ['missing-receipt', 'foreign-receipt', 'business-failed'] as 
     const native = new VoiceRenderer(); t.after(() => native.close()); native.mode = mode;
     const ops = new BridgeMessageOps(native); const input = { filePath: native.source() };
     const options = { targetLoginName: '00AbC', operationId: `voice-${mode}`, verifyTimeoutMs: 30 };
-    const result = await ops.sendVoice(input, options);
+    const result = await ops.sendVoice(input, options, 1);
     assert.equal(result.status, mode === 'business-failed' ? 'failed' : 'unknown');
     if (mode === 'business-failed') assert.equal(result.nativeCode, 617);
     native.mode = 'sent';
     assert.equal((await ops.getSendStatus(options.operationId)).status, result.status);
-    assert.equal((await ops.sendVoice(input, options)).status, result.status);
+    assert.equal((await ops.sendVoice(input, options, 1)).status, result.status);
     assert.equal(native.sent.length, 1); assert.equal(native.encodes, 1); assert.equal(native.timers.size, 0);
   });
 }
@@ -197,10 +208,83 @@ for (const boundary of ['wrong-case', 'missing-zeroes', 'profile-login', 'profil
     if (boundary === 'ambiguous') native.users.push({ id: 5, login_name: '00AbC' });
     if (boundary === 'self') native.currentUserId = 2;
     if (boundary === 'restricted') native.limited = [2];
-    const result = await new BridgeMessageOps(native).sendVoice({ filePath: native.source() }, { targetLoginName: '00AbC', operationId: `voice-${boundary}` });
+    const result = await new BridgeMessageOps(native).sendVoice({ filePath: native.source() }, { targetLoginName: '00AbC', operationId: `voice-${boundary}` }, 1);
     assert.equal(result.status, 'failed'); assert.equal(result.isPreTrigger, true);
     assert.equal(native.drafts.length, 0); assert.equal(native.sent.length, 0); assert.equal(native.timers.size, 0);
   });
+}
+
+test('voice: absent connection sender fails before preparation rather than adopting the latest account', async t => {
+  const native = new VoiceRenderer(); t.after(() => native.close());
+  const ops = new BridgeMessageOps(native);
+  for (const [index, expectedSenderUid] of [undefined, 0, ''].entries()) {
+    const result = await ops.sendVoice({ filePath: native.source() }, { targetLoginName: '00AbC', operationId: `voice-unbound-${index}` }, expectedSenderUid);
+    assert.equal(result.status, 'failed'); assert.equal(result.isPreTrigger, true);
+  }
+  assert.equal(native.encodes, 0); assert.equal(native.drafts.length, 0); assert.equal(native.sent.length, 0);
+  assert.equal(native.budgets.length, 0);
+});
+
+for (const phase of ['prepare', 'lookup'] as const) {
+  test(`voice: direct installed message operations bind sender before ${phase} and reject account switching before draft`, async t => {
+    const native = new VoiceRenderer(); t.after(() => native.close());
+    const ops = new BridgeMessageOps(native);
+    if (phase === 'prepare') native.onEncode = () => { native.currentUserId = 99; };
+    else native.onLookup = () => { native.currentUserId = 99; };
+    const input = { filePath: native.source() };
+    const options = { targetLoginName: '00AbC', operationId: `voice-identity-${phase}`, verifyTimeoutMs: 30 };
+    const result = await ops.sendVoice(input, options, 1);
+    assert.equal(result.status, 'failed'); assert.equal(result.isPreTrigger, true);
+    assert.match(result.error ?? '', /身份|UID/);
+    assert.equal(native.drafts.length, 0); assert.equal(native.sent.length, 0);
+    native.currentUserId = 1;
+    assert.equal((await ops.sendVoice(input, options, 1)).status, 'failed');
+    assert.equal(native.encodes, 1); assert.equal(native.timers.size, 0);
+    assert.equal(native.window.__kairo_pending_sends?.size ?? 0, 0);
+  });
+}
+
+for (const target of ['employee', 'session'] as const) {
+  for (const switchAccount of [false, true]) {
+    test(`voice: Bridge.execute and installed public Driver preserve connection sender for ${target}, switch=${switchAccount}`, async t => {
+      const native = new VoiceRenderer(); t.after(() => native.close());
+      const audio = fs.readFileSync(native.source());
+      const { EdgeTTS } = createRequire(entry)('node-edge-tts');
+      t.mock.method(EdgeTTS.prototype, 'ttsPromise', async (_text: string, file: string) => { fs.writeFileSync(file, audio); });
+      const driver = new KK9Driver({ cdp: { url: 'http://127.0.0.1:1', pageMatch: 'renderer.html' } });
+      // Replace only the transport attachment, never the installed facade, identity query or send operations.
+      const internals = driver as unknown as DriverTransportBoundary;
+      t.mock.method(internals.cdp, 'connect', async () => {});
+      t.mock.method(internals.cdp, 'getStatus', () => 'connected');
+      t.mock.method(internals.cdp, 'evaluate', native.evaluate.bind(native));
+      t.mock.method(internals.eventBridge, 'connect', async () => {});
+      t.mock.method(internals.eventBridge, 'disconnect', async () => {});
+      await driver.connect();
+      t.after(() => driver.disconnect());
+      assert.equal(await driver.getCurrentUserId(), '1');
+      if (switchAccount) native.onEncode = () => { native.currentUserId = 99; };
+      const config = parseConfig({ serverUrl: 'http://127.0.0.1:1', token: 'x'.repeat(32), expectedUserId: '1' }, native.root);
+      const bridge = new Bridge(config, () => driver, () => {});
+      // Private execution is exposed only to drive the real protocol dispatch without a socket.
+      const bridgeExecution = bridge as unknown as BridgeExecutionBoundary;
+      const execute = bridgeExecution.execute.bind(bridge);
+      const operationId = `voice-bridge-identity-${target}-${switchAccount}`;
+      const request = parseRequest(target === 'employee'
+        ? { type: 'request', id: operationId, action: 'send_voice_to_user', params: { login_name: '00AbC', text: '固定发送者', operation_id: operationId } }
+        : { type: 'request', id: operationId, action: 'send', params: { kind: 'voice_text', target_session_id: '77', text: '固定发送者', operation_id: operationId } });
+      const result = await execute(request, driver);
+      assert.equal(result.status, switchAccount ? 'failed' : 'sent');
+      assert.equal(result.isPreTrigger, switchAccount);
+      assert.equal(await driver.getCurrentUserId(), switchAccount ? '99' : '1');
+      assert.equal(native.drafts.length, switchAccount ? 0 : 1);
+      assert.equal(native.sent.length, switchAccount ? 0 : 1);
+      if (!switchAccount) assert.equal(native.sent[0]?.sender, 1);
+      native.currentUserId = 1;
+      assert.equal((await execute(request, driver)).status, result.status);
+      assert.equal(native.encodes, 1); assert.equal(native.timers.size, 0);
+      assert.equal(native.window.__kairo_pending_sends?.size ?? 0, 0);
+    });
+  }
 }
 
 for (const phase of ['prepare', 'lookup', 'deadline'] as const) {
@@ -212,7 +296,7 @@ for (const phase of ['prepare', 'lookup', 'deadline'] as const) {
     if (phase === 'deadline') native.onLookup = () => {
       for (const [id, timer] of native.timers) if (timer.delay >= 18000 && timer.delay < 60000) { native.timers.delete(id); timer.callback(); }
     };
-    const result = await ops.sendVoice({ filePath: native.source() }, { targetLoginName: '00AbC', operationId: `voice-cancel-${phase}` });
+    const result = await ops.sendVoice({ filePath: native.source() }, { targetLoginName: '00AbC', operationId: `voice-cancel-${phase}` }, 1);
     assert.equal(result.status, 'failed'); assert.equal(result.isPreTrigger, true);
     assert.equal(native.drafts.length, 0); assert.equal(native.sent.length, 0); assert.equal(native.timers.size, 0);
   });
@@ -224,9 +308,9 @@ test('voice: cancellation after native submission is unknown, removes listeners 
   native.onSubmit = () => { void ops.cancelPendingSends(); };
   const input = { filePath: native.source() };
   const options = { targetLoginName: '00AbC', operationId: 'voice-cancel-after-submit', verifyTimeoutMs: 30 };
-  const result = await ops.sendVoice(input, options);
+  const result = await ops.sendVoice(input, options, 1);
   assert.equal(result.status, 'unknown'); assert.equal(result.isPreTrigger, false);
-  assert.equal((await ops.sendVoice(input, options)).status, 'unknown');
+  assert.equal((await ops.sendVoice(input, options, 1)).status, 'unknown');
   assert.equal(native.sent.length, 1); assert.equal(native.encodes, 1);
   assert.equal(native.listenerCount('0-2-sendMsgCallback'), 0);
   assert.equal(native.window.__kairo_pending_sends?.size, 0); assert.equal(native.timers.size, 0);
@@ -236,7 +320,7 @@ test('voice: malformed targets reject without even preparing audio', async () =>
   const native = new VoiceRenderer(); try {
     const ops = new BridgeMessageOps(native);
     for (const [index, target] of [{}, { targetLoginName: '' }, { targetLoginName: ' ' }, { targetLoginName: '00AbC', targetSessionId: '77' }].entries()) {
-      const result = await ops.sendVoice({ filePath: '/does-not-exist.wav' }, { ...target, operationId: `voice-target-${index}` });
+      const result = await ops.sendVoice({ filePath: '/does-not-exist.wav' }, { ...target, operationId: `voice-target-${index}` }, 1);
       assert.equal(result.status, 'failed'); assert.equal(result.isPreTrigger, true);
     }
     assert.equal(native.budgets.length, 0); assert.equal(native.encodes, 0);
@@ -247,6 +331,8 @@ test('voice: public Driver recall uses native confirmed session, not a window or
   const native = new VoiceRenderer(); t.after(() => native.close());
   const driver = new KK9Driver({ cdp: { url: 'http://127.0.0.1:1', pageMatch: 'renderer.html' } });
   Object.defineProperty(driver, 'bridgeMessageOps', { value: new BridgeMessageOps(native) });
+  // This focused recall test supplies the identity that connect binds in production.
+  Object.defineProperty(driver, 'currentUserId', { value: '1' });
   const recalls: unknown[][] = [];
   driver.recallMessage = async (...args) => { recalls.push(args); return true; };
   const result = await driver.sendVoice({ filePath: native.source() }, { targetLoginName: '00AbC', operationId: 'voice-public-recall', verifyTimeoutMs: 30 });

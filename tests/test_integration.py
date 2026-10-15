@@ -1065,17 +1065,22 @@ async def test_directed_text_voice_crosses_real_bridge_without_posting_to_source
         assert await choose.call(wrap(selection), choice=2) == result
     else:
         assert await voice.call(wrap(event), name=name, text="不得改变正文") == result
-    assert "sent" in result and "operationId=" in result
+    assert result is None
     calls = await command("calls")
     assert len(calls) == 1
     assert calls[0]["type"] == "voice" and calls[0]["payload"] == {"text": body}
     assert calls[0]["options"]["targetLoginName"] == login
     assert "targetSessionId" not in calls[0]["options"]
-    assert calls[0]["options"]["operationId"] in result
+    operation_id = calls[0]["options"]["operationId"]
+    receipt = await adapter.get_client().get_send_status(operation_id)
+    assert receipt["status"] == "sent" and receipt["operationId"] == operation_id
+    assert receipt["messageId"]
     private = next(
         item for item in await adapter.get_client().get_sessions() if item["receiverId"] == uid
     )
     assert private["type"] == "private" and private["id"] != event.target_session_id
+    assert receipt["sessionId"] == private["id"]
+    assert len(await command("calls")) == 1
 
 
 async def test_directed_text_voice_unknown_reconciles_without_duplicate_native_send(

@@ -6,7 +6,7 @@
 
 ## 安装与启动
 
-本版固定上游 [main 提交 `db186e05a7df6b94de041a9e8f9f8787e1d9d3a6`](https://github.com/dnslin/kairo-driver/commit/db186e05a7df6b94de041a9e8f9f8787e1d9d3a6)，原生包含三类卡片及图片/文件的准确工号定向发送、Edge TTS 新端点及资源清理、全分页人员搜索、远程 CDP 和跨机器附件传输。上游包版本仍为 2.0.1，源码身份以提交为准；准备脚本与生成归档保持固定提交，冻结安装通过标准 pnpm 补丁补齐准确工号语音发送，不修改原始 checkout，不依赖本机开发链接。
+本版固定上游 [main 提交 `8507d4eb8ac458b197e34a52a60e87de6ff0a2be`](https://github.com/dnslin/kairo-driver/commit/8507d4eb8ac458b197e34a52a60e87de6ff0a2be)，原生包含准确工号卡片、图片、文件和语音发送及连接发送者绑定；保留 Edge TTS 清理、人员搜索、远程 CDP 和跨机器附件。包版本仍为 2.0.1，源码身份以提交为准；准备脚本与归档固定同一提交，不再配置或维护 Driver 自身补丁，不修改原始 checkout，不依赖本机开发链接。
 
 ### 1. 在 Windows 启动 KK9
 
@@ -139,7 +139,7 @@ Driver 优先非空 `HTTPS_PROXY`，其次非空 `HTTP_PROXY`，均未设置保�
 
 ## 连接与发送记录
 
-- 每次连接和发送前核对实际登录 UID，账号不符时停止该连接的收发。
+- 每次连接和发送前核对实际登录 UID，账号不符时停止该连接的收发。语音还保留连接绑定的发送者 UID，在准备完成后及创建草稿前核对最新身份；准备或查人期间已观察到的换号返回 `failed`，不创建草稿、不提交消息。
 - WebSocket 断线后重连并重放当前进程内未收到 ACK 的入站消息。Driver 失效时先清理旧实例，再新建实例。
 - 只消费 `message` 事件中的 `inbound` 消息，避免自身回显和 `at` 快捷事件造成重复。
 - `dataDir/send-operations.sqlite` 持久保存 `operation_id`、目标工号、内容摘要和发送结果。`sent` 是原生发送确认，不是已读或送达证明；`failed` 保留原因；`unknown` 表示结果不确定，只查询同一个 ID，不自动重发。同一 ID 的前置失败也不会重新提交，迟到的 unknown 不覆盖已确认终态。
@@ -148,7 +148,7 @@ Driver 优先非空 `HTTPS_PROXY`，其次非空 `HTTP_PROXY`，均未设置保�
 
 ## 依赖与验证
 
-Driver 固定到 `dnslin/kairo-driver` 的 main 提交 `db186e05a7df6b94de041a9e8f9f8787e1d9d3a6`，不是以仍为 2.0.1 的包版本号或旧发布提交识别。准备脚本在 `vendor/kairo-driver-db186e05a7df` 检出固定源码，再用标准 `pnpm pack` 的 prepack 构建并生成 `vendor/kairo-driver-db186e05a7df.tgz`；桥接从该相对归档依赖安装。`pnpm-workspace.yaml` 的 `patchedDependencies` 应用 `patches/@kairo__driver@2.0.1.patch`，补齐准确工号语音、取消信号和正式会话绑定；源码、JS、声明及映射同步，锁文件固定补丁，不依赖临时注册表或修改 vendor。仍保留上游 WAV 解码及 `node-edge-tts@1.2.11.patch` 两份音频依赖补丁，不恢复已合入的旧卡片/媒体发送补丁。
+Driver 固定到 `dnslin/kairo-driver` 的 main 提交 `8507d4eb8ac458b197e34a52a60e87de6ff0a2be`，不是以仍为 2.0.1 的包版本号或旧发布提交识别。准备脚本在 `vendor/kairo-driver-8507d4eb8ac4` 检出固定源码，再用标准 `pnpm pack` 的 prepack 构建并生成 `vendor/kairo-driver-8507d4eb8ac4.tgz`；桥接从该相对归档依赖安装，直接消费上游原生定向语音及账号核对。Driver 的 `patchedDependencies` 条目与补丁文件已删除；仅保留上游 WAV 解码及 `node-edge-tts@1.2.11.patch` 两份第三方音频依赖补丁。
 
 桥接工作区同时将 `node-edge-tts` override 锁定为 1.2.11，并应用同一补丁；只改 Driver 提交而保留 1.2.10 的强制版本会继续安装旧 SDK。准备脚本核对新版补丁文件名及内容，冻结安装使用对应新锁文件。既有 `sendVoice({text})` 调用链、默认音色、标准代理优先级、KK 编码及未知不重发规则不变。
 
