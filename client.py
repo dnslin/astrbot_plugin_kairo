@@ -180,6 +180,7 @@ class KairoClient:
         *,
         card: dict | None = None,
         media: dict | None = None,
+        voice_text: str | None = None,
         operation_id: str | None = None,
     ) -> dict:
         """Recheck the selected UID and exact login snapshot, then use the policy send path.
@@ -187,8 +188,8 @@ class KairoClient:
         A changed or missing identity is not a reason to guess another login or UID.
         The bridge supplies the real raw login, never the Driver's display fallback.
         """
-        if sum(value is not None for value in (text, card, media)) != 1:
-            raise ValueError("通知必须且只能提供 text、card 或 media 之一")
+        if sum(value is not None for value in (text, card, media, voice_text)) != 1:
+            raise ValueError("通知必须且只能提供 text、card、media 或 voice_text 之一")
         if not user_id.strip() or not login_name.strip():
             raise BridgeError("IDENTITY_UNAVAILABLE", "所选员工缺少 UID 或准确工号")
         response = await self._server.request("get_user_profile", {"user_id": user_id})
@@ -209,6 +210,10 @@ class KairoClient:
             raise BridgeError("IDENTITY_UNAVAILABLE", f"员工 {user_id} 缺少真实 UID 或准确工号")
         if uid != user_id or login != login_name:
             raise BridgeError("IDENTITY_CHANGED", "所选员工 UID 或准确工号已变化，请重新查询")
+        if voice_text is not None:
+            return await self.notify_employee_voice(
+                login_name, voice_text, operation_id=operation_id
+            )
         if card is not None:
             return await self.notify_employee_card(login_name, card, operation_id=operation_id)
         if media is not None:
@@ -257,6 +262,21 @@ class KairoClient:
             "send_card_to_user",
             {**params, "login_name": login_name},
             operation_id=operation_id,
+        )
+
+    async def notify_employee_voice(
+        self, login_name: str, text: str, *, operation_id: str | None = None
+    ) -> dict:
+        """按准确工号由现有 Driver 合成语音私聊；未知结果只查询，不重发。"""
+        login_name = login_name.strip()
+        if not login_name or not text.strip():
+            raise ValueError("准确工号和语音正文不能为空")
+        self._policy.check_employee(login_name)
+        return await self._send_operation(
+            "send_voice_to_user",
+            {"login_name": login_name, "text": text},
+            operation_id=operation_id,
+            timeout=90,
         )
 
     async def prepare_media(self, kind: str, source: Image | File | Path) -> dict:

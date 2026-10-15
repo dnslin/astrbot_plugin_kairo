@@ -126,6 +126,8 @@ class KairoNotifications:
         event.set_extra(_SEND_KEY, pending.operation_id)
         if isinstance(pending.body, str):
             content = {"text": pending.body}
+        elif pending.body.get("kind") == "voice_text":
+            content = {"voice_text": pending.body["text"]}
         elif "kind" in pending.body:
             content = {"media": pending.body}
         else:
@@ -151,10 +153,16 @@ class KairoNotifications:
             return "该通知消息早于当前通知意图，旧查询不会替换或发送。"
         self._latest[scope] = (event.received_at_ns, attempt["operation_id"])
         is_media = name in {"kairo_send_image", "kairo_send_file"}
+        if name == "kairo_notify_employee":
+            body = args["text"]
+        elif name == "kairo_send_voice":
+            body = {"kind": "voice_text", "text": args["text"]}
+        elif is_media:
+            body = dict(args)
+        else:
+            body = _card_data(name, args)
         pending = _Pending(
-            body=args["text"]
-            if name == "kairo_notify_employee"
-            else (dict(args) if is_media else _card_data(name, args)),
+            body=body,
             operation_id=attempt["operation_id"],
             source_id=event.message_obj.message_id,
             source_timestamp=_timestamp(event),
@@ -318,7 +326,7 @@ class KairoSelectEmployeeTool(FunctionTool[AstrAgentContext]):
             description=(
                 "仅管理员已看到员工候选列表后，在下一条真实用户消息明确回复数字编号时调用。"
                 "choice 必须对应当前原生消息的明确数字选择，不能由模型推断或替用户决定。"
-                "按保存的候选 UID 和原始通知文本或卡片发送，不能修改内容、工号、会话或用户。"
+                "按保存的候选 UID 和原始通知文本、语音正文、卡片或附件发送，不能修改内容、工号、会话或用户。"
                 "发送前复查真实 UID、准确工号和员工名单；失败或未知结果不得重发。"
             ),
             parameters={

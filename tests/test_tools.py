@@ -140,7 +140,7 @@ def wrap(event, context=None):
 
 
 def make_tool(constructor):
-    return constructor() if constructor is KairoSendVoiceTool else constructor(KairoNotifications())
+    return constructor(KairoNotifications())
 
 
 def test_real_tools_register_once_with_plugin_lifecycle_ownership():
@@ -217,7 +217,7 @@ async def test_same_event_duplicate_and_concurrent_calls_submit_once(tool_type, 
 @pytest.mark.asyncio
 async def test_tool_state_is_independent_across_events_and_capabilities():
     boundary = NativeBoundary()
-    voice = KairoSendVoiceTool()
+    voice = KairoSendVoiceTool(KairoNotifications())
     first, second = make_event(boundary), make_event(boundary)
     assert await voice.call(wrap(first), text="一") is None
     assert await voice.call(wrap(second), text="二") is None
@@ -470,7 +470,10 @@ async def test_cancelled_tool_wait_retains_original_intent_without_resubmission(
 async def test_voice_accepts_exact_utf16_limit_without_host_tts_or_file_upload():
     boundary = NativeBoundary()
     text = "😀" * 64_000
-    assert await KairoSendVoiceTool().call(wrap(make_event(boundary)), text=text) is None
+    assert (
+        await KairoSendVoiceTool(KairoNotifications()).call(wrap(make_event(boundary)), text=text)
+        is None
+    )
     assert boundary.sends[0]["text"] == text
     assert boundary.sends[0]["kind"] == "voice_text"
 
@@ -515,7 +518,7 @@ async def test_driver_tts_failure_remains_native_error_without_success_or_fallba
 
     boundary.request = request
     event = make_event(boundary)
-    tool = KairoSendVoiceTool()
+    tool = KairoSendVoiceTool(KairoNotifications())
     result = await tool.call(wrap(event), text="朗读")
     assert "VOICE_TTS_FAILED" in result and "403" in result
     assert f"operationId={boundary.sends[0]['operation_id']}" in result
@@ -524,12 +527,20 @@ async def test_driver_tts_failure_remains_native_error_without_success_or_fallba
 
 
 @pytest.mark.parametrize("directed_first", [False, True])
-async def test_same_card_tool_cannot_change_route_after_first_event_attempt(directed_first):
+@pytest.mark.parametrize(
+    "tool_type,local",
+    [
+        (KairoSendAppCardTool, {"title": "公告", "text": "正文"}),
+        (KairoSendVoiceTool, {"text": "朗读正文"}),
+    ],
+)
+async def test_same_tool_cannot_change_route_after_first_event_attempt(
+    directed_first, tool_type, local
+):
     boundary = NativeBoundary()
     event = make_event(boundary)
     event.role = "admin"
-    tool = make_tool(KairoSendAppCardTool)
-    local = {"title": "公告", "text": "正文"}
+    tool = make_tool(tool_type)
     directed = {**local, "name": "张三"}
     # A directed attempt with no match is still the event's first intent.
     original_request = boundary.request
@@ -548,7 +559,7 @@ async def test_same_card_tool_cannot_change_route_after_first_event_attempt(dire
         assert boundary.sends == []
     else:
         assert [(send["kind"], send["target_session_id"]) for send in boundary.sends] == [
-            ("app_card", "12345")
+            ("voice_text" if tool_type is KairoSendVoiceTool else "app_card", "12345")
         ]
         assert "search_employees" not in boundary.lookups
 

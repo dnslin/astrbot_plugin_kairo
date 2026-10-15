@@ -18,10 +18,10 @@
 ## 依赖来源
 
 - AstrBot 验证基线：`v4.29.0-beta.1`，元数据约束 `>=4.29.0b1,<5`。该基线不是稳定版承诺。
-- Driver 固定提交：`db186e05a7df6b94de041a9e8f9f8787e1d9d3a6`，原生包含准确工号卡片及图片/文件发送，并保留 Edge SDK 1.2.11 资源清理、完整人员搜索和远程附件；包版本仍为 2.0.1，不等同于旧 `v2.0.1` 发布提交。源码归档与两份音频依赖补丁保持一致，不再维护 Driver 自身补丁。
+- Driver 固定提交：`db186e05a7df6b94de041a9e8f9f8787e1d9d3a6`，原生包含准确工号卡片及图片/文件发送，并保留 Edge SDK 1.2.11 资源清理、完整人员搜索和远程附件；包版本仍为 2.0.1，不等同于旧 `v2.0.1` 发布提交。源码归档与两份音频依赖补丁保持一致；`bridge/patches/@kairo__driver@2.0.1.patch` 通过标准 pnpm 机制补齐准确工号语音，不修改 vendor checkout。
 - Python 3.12+、Node.js 22.13+（推荐 24）、pnpm 11.19.0。
 
-Python 插件只声明 `aiohttp`，AstrBot API 与工具 schema 校验依赖由宿主提供。Driver 尚未发布 npm；准备脚本固定检出、按上游锁文件安装，再通过标准 `pnpm pack` 的 prepack 构建并生成 `vendor/kairo-driver-db186e05a7df.tgz`。桥接使用该相对路径归档依赖，直接消费 Driver 已合入的卡片及媒体定向实现，原始 checkout 不修改。桥接同步上游 WAV 解码及 `node-edge-tts@1.2.11.patch` 两份音频依赖补丁，SDK override 锁定 1.2.11。更新固定提交时同步准备脚本、归档名、实际音频补丁、override 和锁文件。保留完整人员搜索、群成员只读查询及既有原图、代理和 CONNECT 超时清理行为。
+Python 插件只声明 `aiohttp`，AstrBot API 与工具 schema 校验依赖由宿主提供。Driver 尚未发布 npm；准备脚本固定检出、按上游锁文件安装，再通过标准 `pnpm pack` 的 prepack 构建并生成 `vendor/kairo-driver-db186e05a7df.tgz`。桥接使用该相对路径归档依赖，直接消费 Driver 已合入的卡片及媒体定向实现，冻结安装应用语音定向补丁，原始 checkout 不修改。桥接同步上游 WAV 解码及 `node-edge-tts@1.2.11.patch` 两份音频依赖补丁，SDK override 锁定 1.2.11。更新固定提交时同步准备脚本、归档名、实际音频补丁、override 和锁文件，并核对语音补丁是否仍需应用。保留完整人员搜索、群成员只读查询及既有原图、代理和 CONNECT 超时清理行为。
 
 准备过程先在独立临时目录检出，完成后才发布最终源码目录；中断可重试。已有最终目录若提交不符或跟踪文件修改则明确报错，不覆盖修改。归档由准备脚本生成，不提交或引用开发机器上的临时包；pnpm 固定归档时间戳，重复构建打包的字节一致。首次准备使用 `node scripts/prepare-driver.mjs`，避免 pnpm 在缺少归档时先自动安装依赖。
 
@@ -88,8 +88,9 @@ CI 的 Node 检查覆盖 Windows/Linux，集成任务引用 `v4.29.0-beta.1`。0
 
 - `notify_employee(login_name, text, operation_id=None) -> dict`：准确工号首次/已有私聊文本通知，返回原生 `sent/failed/unknown`、`operationId`，成功带正式 `sessionId`；调用错误抛 `BridgeError`。
 - `notify_employee_card(login_name, card, *, operation_id=None) -> dict`：准确工号首次/已有私聊卡片通知，`card` 为 `kairo.app/kairo.url/kairo.biz` Json 字典；完整预检及名单通过后只发送该卡片，不预发文本。
+- `notify_employee_voice(login_name, text, *, operation_id=None) -> dict`：按准确工号合成并发送语音私聊，支持首次联系；沿用员工名单与发送意图，单请求等待 90 秒，未知只查询原意图，不预发文本。
 - `search_employees(keyword) -> dict`：只读返回完整 `{employees,hasMore:false}`；身份字段可空，Driver 负责分页与 UID 去重，Python 拒绝无效或不完整响应，不推断唯一。等待 35 秒，不改变全局默认时限。
-- `notify_employee_uid(user_id, login_name, text=None, *, card=None, media=None, operation_id=None) -> dict`：以搜索快照中的 UID/准确工号重查真实档案；`text`、`card`、`media` 必须且只能提供一个，`media` 使用 `prepare_media` 返回的缓存描述。缺失或变化抛 `BridgeError`，匹配后复用相应文本/卡片/附件通知的名单及发送意图处理。保留工号大小写和前导零；该 API 不代替模型工具的管理员检查。
+- `notify_employee_uid(user_id, login_name, text=None, *, card=None, media=None, voice_text=None, operation_id=None) -> dict`：以搜索快照中的 UID/准确工号重查真实档案；`text`、`card`、`media`、`voice_text` 必须且只能提供一个，`media` 使用 `prepare_media` 返回的缓存描述，`voice_text` 为原始朗读正文。缺失或变化抛 `BridgeError`，匹配后复用相应文本/卡片/附件/语音通知的名单及发送意图处理。保留工号大小写和前导零；该 API 不代替模型工具的管理员检查。
 - `send_voice_text(target_session_id, text, sender_id=None, operation_id=None) -> dict`：当前准确原生目标的文字语音，复查名单后交给 Driver 合成，返回含 `operationId` 的原生结果；单请求等待 90 秒，不调用宿主 TTS。
 - `send_card(target_session_id, card, sender_id=None, operation_id=None) -> dict`：一张 `kairo.app/kairo.url/kairo.biz` Json 字典卡片，复用完整卡片预检和名单；返回含 `operationId` 的原生结果，调用方可提前保存 ID 并在等待取消后只查询同一意图。
 - `prepare_media(kind, source) -> dict`：`kind` 为 `image`/`file`，`source` 为宿主 `Image`/`File` 组件或可信调用方的 `Path`；缓存真实字节，保留文件名，返回 `{kind,file_id,name}`。模型工具在此调用前检查管理员路径权限。
@@ -99,7 +100,7 @@ CI 的 Node 检查覆盖 Windows/Linux，集成任务引用 `v4.29.0-beta.1`。0
 - `get_group_members(session_id, *, sender_id=None) -> list[dict]`：完整原生群成员资料，字段为字符串UID、可空真实工号/姓名/全部可见部门路径/岗位；沿用当前群及发起人规则，查询返回前再次检查。单次等待35秒，拒绝字段缺失、非法字段类型和重复UID，不返回部分资料或静默回退。模型工具仅从当前真实群事件传入原生会话和发起人，不允许选择其他群。
 - `send_chain(target_session_id, message, sender_id=None) -> None`：顺序发送支持的组件，失败或未知抛含 `result` 的 `BridgeError`；事件回复保留原群发送者作名单复查。
 
-管理员命令为 `/kairo notify <平台实例ID> <准确工号> <正文>`，仍只发送文本，不开放额外 HTTP 通知接口。语音及无 `name` 的卡片/图片/文件工具发当前会话；卡片和附件带 `name` 时共用管理员姓名通知与编号选择，在当前 Kairo 实例内推送员工私聊，不允许模型指定实例、会话、UID 或工号。图片/文件的宿主 `path` 仅管理员可用，默认转发当前消息对应类型附件。通讯超时/断线且未确认成功的 Python 发送结果额外保留 `code`，不重发。工具使用及网络前提见主说明，内部字段见 [协议 v2](PROTOCOL.md)。
+管理员命令为 `/kairo notify <平台实例ID> <准确工号> <正文>`，仍只发送文本，不开放额外 HTTP 通知接口。语音、卡片、图片和文件工具无 `name` 时发当前会话；带 `name` 时共用管理员姓名通知与编号选择，在当前 Kairo 实例内推送员工私聊，不允许模型指定实例、会话、UID 或工号。图片/文件的宿主 `path` 仅管理员可用，默认转发当前消息对应类型附件。通讯超时/断线且未确认成功的 Python 发送结果额外保留 `code`，不重发。工具使用及网络前提见主说明，内部字段见 [协议 v2](PROTOCOL.md)。
 
 ## API 依据
 
@@ -277,4 +278,14 @@ Driver main 已合入并推送提交 `db186e05a7df6b94de041a9e8f9f8787e1d9d3a6`�
 先以真实框架注册工具回归证明工具缺失，补齐实现后17项专项通过。实际执行 `pnpm check` 构建及88项Node通过，包含安装后的真实Driver生成原生IPC脚本、502成员、去重、空群及后续档案错误；AstrBot虚拟环境 `python.exe -m pytest -q --tb=short` 全套376项通过，包含201成员跨语言原群路由和未知会话错误。临时反转群聊判断后，私聊拒绝回归按预期失败；恢复后2项边界回归通过。`ruff check *.py tests`、`ruff format --check *.py tests` 通过（21文件），保留宿主已有audioop弃用警告。
 
 独立 `python.exe artifacts/tmp/group-members-smoke.py` 运行真实AstrBot事件、已注册工具、鉴权HTTP/WS、编译后的桥接和SQLite；KK9使用上游Fake，外部遥测关闭。确认普通群成员可查询，改写宿主群字段仍读取原群，同名人员/前导零工号/多部门/null原样保留，动态群名单拒绝，私聊隐藏且拒绝，原生未知会话错误不是空群。原生发送次数及SQLite发送意图数均为0。一次性脚本与隔离数据验证后清理，未连接真实KK9、发布版本、重启生产服务或声称真实模型/服务器名单验收通过。
+
+## 按姓名语音私聊（实现验证记录）
+
+`kairo_send_voice(text, name?)` 无姓名保持当前会话，有姓名复用现有管理员查人、下一条原生消息选择、UID/准确工号复查及名单。待选意图保存原始朗读正文；跨当前/定向调用共用事件级尝试，失败或 unknown 不转投其他目标。新增 `send_voice_to_user` 仅传准确工号、正文及稳定意图 ID，90 秒请求预算；桥接复用当前 Driver，不创建第二个 CDP 连接、不预发文字或切窗口。Computer Use、工具启停和 EventBridge 接管策略均未修改。
+
+Driver 基础提交保持不变。`pnpm patchedDependencies` 应用 `@kairo__driver@2.0.1.patch`，仅补齐 voice 工号目标、取消信号、正式会话撤回绑定、对应 Fake 和类型注释。补丁包含源码与由固定编译选项生成的 JS、声明及映射，原始 vendor checkout 不修改。未发布包的 `pnpm patch` 注册表 404 通过一次性 localhost 服务提供同一原归档解决；该服务已停止，配置与锁文件不引用它，后续标准准备及冻结安装不需要临时注册表。
+
+先运行新增回归复现缺口：Python 语音专项 14 项失败；真实安装 Driver 专项 7 项失败。实现后实际运行 `node scripts/prepare-driver.mjs && pnpm install --frozen-lockfile && pnpm check`：准备、冻结安装、TypeScript 构建及 110 项 Node 通过。`D:/Person/AstrBot/.venv/Scripts/python.exe -m pytest -q --tb=short` 全套 409 项通过；相关 Python 文件与 tests 的 Ruff 规则及格式检查通过，保留宿主已有 audioop 弃用警告。真实安装包测试实际执行语音准备与发送 renderer，仅替代外部 TTS 服务、原生编码器及 IPC，覆盖准确工号、首次/已有私聊、正式/错误回执、取消与 unknown 防重。
+
+独立 `python.exe artifacts/tmp/directed-voice-smoke.py` 使用真实 AstrBot 注册工具、平台事件、HTTP/WS、编译桥接和 SQLite，只有 KK9 使用 Fake。重名选择保存原文并首次私聊成功；普通成员跨会话被拒绝；unknown 并发/重复调用不重发。共 2 次 Fake 语音提交，持久状态为 sent、unknown，Driver 代次始终为 1，没有定向语音发回原群。首次脚本读 SQLite 后未显式关闭读取连接，Windows 临时目录删除失败；修正临时脚本后整轮退出 0，残留目录已清理。隔离进程反转姓名路由后，定向语音回归按预期失败，持久源码未修改。一次性脚本与隔离数据已清理，未连接生产 CDP、发送真实消息、重启生产服务或验证模型自然语言选择及真实接收端播放。
 

@@ -11,7 +11,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "dev": "node --import tsx src/index.ts",
-    "test": "node --import tsx --test tests/attachments.test.ts tests/bridge.test.ts tests/driver-directed-cards.test.ts tests/driver-directed-media.test.ts tests/protocol.test.ts tests/store.test.ts tests/whoami.test.ts",
+    "test": "node --import tsx --test tests/attachments.test.ts tests/bridge.test.ts tests/driver-directed-cards.test.ts tests/driver-directed-media.test.ts tests/driver-directed-voice.test.ts tests/protocol.test.ts tests/store.test.ts tests/whoami.test.ts",
     "check": "pnpm build && pnpm test"
   },
   "dependencies": {

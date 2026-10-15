@@ -20,6 +20,7 @@ type Request<A extends string, P> = { type: 'request'; id: string; action: A; pa
 export type BridgeRequest =
   | Request<'send', SendParams>
   | Request<'send_to_user', { operation_id: string; login_name: string; text: string }>
+  | Request<'send_voice_to_user', { operation_id: string; login_name: string; text: string }>
   | Request<'send_card_to_user', { operation_id: string; login_name: string } & CardParams>
   | Request<'send_media_to_user', { operation_id: string; login_name: string; kind: 'image' | 'file' } & FileParams>
   | Request<'get_send_status', { operation_id: string }>
@@ -100,14 +101,14 @@ export function parseRequest(value: unknown): BridgeRequest {
     fields(params, ['keyword'], 'params');
     return { type: 'request', id, action: raw.action, params: { keyword: text(params.keyword, 'keyword') } };
   }
-  if (!['send', 'send_to_user', 'send_card_to_user', 'send_media_to_user', 'get_send_status'].includes(String(raw.action))) throw new RequestError('UNSUPPORTED_ACTION', '仅支持 send、send_to_user、send_card_to_user、send_media_to_user、get_send_status、get_sessions、get_group_members、get_user_profile 和 search_employees');
+  if (!['send', 'send_to_user', 'send_voice_to_user', 'send_card_to_user', 'send_media_to_user', 'get_send_status'].includes(String(raw.action))) throw new RequestError('UNSUPPORTED_ACTION', '仅支持 send、send_to_user、send_voice_to_user、send_card_to_user、send_media_to_user、get_send_status、get_sessions、get_group_members、get_user_profile 和 search_employees');
   const operation_id = text(params.operation_id, 'operation_id');
   if (raw.action === 'get_send_status') {
     fields(params, ['operation_id'], 'params');
     return { type: 'request', id, action: raw.action, params: { operation_id } };
   }
-  if (raw.action === 'send_to_user') {
-    fields(params, ['operation_id', 'login_name', 'text'], 'send_to_user');
+  if (raw.action === 'send_to_user' || raw.action === 'send_voice_to_user') {
+    fields(params, ['operation_id', 'login_name', 'text'], raw.action);
     return { type: 'request', id, action: raw.action, params: { operation_id, login_name: text(params.login_name, 'login_name').trim(), text: text(params.text, 'text', 128_000) } };
   }
   if (raw.action === 'send_card_to_user') {

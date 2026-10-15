@@ -210,22 +210,28 @@ class KairoGetGroupMembersTool(FunctionTool[AstrAgentContext]):
 
 
 class KairoSendVoiceTool(FunctionTool[AstrAgentContext]):
-    def __init__(self) -> None:
+    def __init__(self, manager: KairoNotifications) -> None:
         super().__init__(
             name="kairo_send_voice",
             description=(
-                "仅在用户明确要求语音/朗读回复时调用，将 text 交给 Driver 通过 Edge 合成语音并发送到当前会话。"
-                "普通聊天不要调用；不支持音色、文件、引用或提及。不确定的发送结果不得重发。"
+                "仅在用户明确要求语音/朗读时调用，将 text 交给 Driver 通过 Edge 合成语音。"
+                "不传 name 发到当前 Kairo 会话；管理员明确要求跨会话私聊员工时，"
+                "name 填用户提供的员工姓名，不得填 UID 或猜测工号。"
+                "重名或模糊匹配须展示全部候选，等待下一条真实用户消息调用 kairo_select_employee 选择。"
+                "普通聊天不要调用；不支持音色、文件、引用或提及。不要另补文字，未知结果不得重发。"
             ),
             parameters={
                 "type": "object",
-                "properties": {"text": _TEXT},
+                "properties": {"text": _TEXT, "name": _TEXT},
                 "required": ["text"],
                 "additionalProperties": False,
             },
         )
+        self._manager = manager
 
     async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str | None:
+        if "name" in kwargs:
+            return await self._manager._call(self, context, kwargs)
         return await _call(self, context, kwargs)
 
 
