@@ -178,10 +178,11 @@ export class Attachments {
       }));
     }
     if (message.fileInfo) {
-      const { filePath, ...metadata } = message.fileInfo;
+      const { filePath, uri, ...metadata } = message.fileInfo;
       try {
-        if (!filePath) throw new Error('文件尚未缓存；当前版本无法自动下载 KK9 远程附件');
-        const path = await this.cacheAttachment('file', filePath, metadata.fileName, target => driver.saveFile(message.fileInfo!, target));
+        const source = uri || filePath;
+        if (!source) throw new Error('文件缺少 KK9 缓存路径或下载 URI');
+        const path = await this.cacheAttachment('file', source, metadata.fileName, target => driver.saveFile(message.fileInfo!, target));
         result.fileInfo = { ...metadata, ...await this.upload(path, 'file', metadata.fileName) };
       } catch (error) {
         result.fileInfo = { ...metadata, attachment_error: error instanceof Error ? error.message : '文件不可读取' };
